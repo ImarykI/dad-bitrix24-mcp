@@ -12,6 +12,7 @@ const runtimeConfig: Record<string, unknown> = {
   bitrix24OauthClientSecret: 'not-used-by-test',
   bitrix24OauthRedirectUrl: 'https://mcp.example.com/api/oauth/callback',
   bitrix24OauthScope: 'user,task,im,disk',
+  bitrix24Portal: '',
 }
 vi.stubGlobal('useRuntimeConfig', () => runtimeConfig)
 
@@ -98,6 +99,8 @@ beforeEach(async () => {
   runtimeConfig.bitrix24OauthClientId = 'b24-app-id'
   runtimeConfig.bitrix24OauthRedirectUrl = 'https://mcp.example.com/api/oauth/callback'
   runtimeConfig.bitrix24OauthScope = 'user,task,im,disk'
+  runtimeConfig.bitrix24Portal = ''
+  vi.stubEnv('BITRIX24_PORTAL', '')
   await store.registerMcpOAuthClient({
     clientId: validRequest.client_id,
     clientName: 'Claude',
@@ -106,7 +109,10 @@ beforeEach(async () => {
   vi.resetModules()
 })
 
-afterEach(() => db.close())
+afterEach(() => {
+  db.close()
+  vi.unstubAllEnvs()
+})
 
 describe('/api/oauth/authorize', () => {
   it('requires a registered client, exact redirect, resource, and S256 challenge', async () => {
@@ -139,5 +145,36 @@ describe('/api/oauth/authorize', () => {
     const b24State = location.searchParams.get('state')!
     expect(store.consumeState(b24State)).toMatchObject({ portal: 'dad.bitrix24.ru', clientId: 'b24-app-id' })
     expect(store.getMcpOAuthRequest(flowId!)).toMatchObject({ portal: 'dad.bitrix24.ru', b24State })
+  })
+
+  it('skips portal selection and redirects to the configured portal', async () => {
+    runtimeConfig.bitrix24Portal = 'dad.bitrix24.ru'
+    const response = await callHandler(validRequest)
+
+    expect(response.statusCode).toBe(302)
+    const location = new URL(String(response.headers.location))
+    expect(location.origin).toBe('https://dad.bitrix24.ru')
+    expect(location.searchParams.get('scope')).toBe('user,task,im,disk')
+    expect(response.headers['set-cookie']).toBeDefined()
+    expect(store.consumeState(location.searchParams.get('state')!)).toMatchObject({
+      portal: 'dad.bitrix24.ru',
+      clientId: 'b24-app-id',
+    })
+  })
+
+  it('supports BITRIX24_PORTAL as a direct environment-variable alias', async () => {
+    vi.stubEnv('BITRIX24_PORTAL', 'dad.bitrix24.ru')
+    const response = await callHandler(validRequest)
+
+    expect(response.statusCode).toBe(302)
+    expect(new URL(String(response.headers.location)).origin).toBe('https://dad.bitrix24.ru')
+  })
+
+  it('fails closed when the configured portal is not an allowed Bitrix24 hostname', async () => {
+    runtimeConfig.bitrix24Portal = 'attacker.example.com'
+    const response = await callHandler(validRequest)
+
+    expect(response.statusCode).toBe(503)
+    expect(response.body).toContain('Configured Bitrix24 portal hostname is invalid')
   })
 })

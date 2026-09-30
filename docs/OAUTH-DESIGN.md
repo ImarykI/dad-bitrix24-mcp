@@ -45,7 +45,7 @@ OAuth 2.0 via `B24OAuth` (shipped by `@bitrix24/b24jssdk`) replaces both shortco
 
 1. Claude calls `/mcp` without a token and receives `401` with the protected-resource metadata URL.
 2. Claude reads the resource and authorization-server metadata, registers a public client at `/api/oauth/register`, then opens `/api/oauth/authorize` with `resource`, client state, and an S256 PKCE challenge.
-3. The server validates the client, exact Claude callback URI, resource, and PKCE request; a CSRF-bound portal form lets the user choose their Bitrix24 portal.
+3. The server validates the client, exact Claude callback URI, resource, and PKCE request; by default a CSRF-bound portal form lets the user choose their Bitrix24 portal. Operators may set `NUXT_BITRIX24_PORTAL` to skip that chooser for a fixed portal (the user's Bitrix24 sign-in and consent are still required).
 4. The user signs in and consents at that Bitrix24 portal. `/api/oauth/callback` exchanges the Bitrix code, persists the per-user Bitrix tokens, creates a short-lived MCP authorization code, and redirects to `https://claude.ai/api/mcp/auth_callback` with the original client state and issuer.
 5. Claude exchanges the code plus its PKCE verifier and resource at `/api/oauth/token`. The MCP server returns a one-hour, audience-bound access token and a rotating refresh token. Raw tokens are never persisted.
 

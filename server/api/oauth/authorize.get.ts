@@ -44,6 +44,45 @@ export default defineEventHandler(async (event) => {
   }
 
   const store = useTokenStore()
+  const configuredPortal = String(config.bitrix24Portal || process.env.BITRIX24_PORTAL || '').trim().toLowerCase()
+  if (configuredPortal && !isAllowedPortalDomain(configuredPortal)) {
+    throw createError({ statusCode: 503, statusMessage: 'Configured Bitrix24 portal hostname is invalid' })
+  }
+
+  const launchBitrixAuthorization = (flowId: string, csrfCookie: string, portal: string, requestExpiresAt: number) => {
+    const now = Math.floor(Date.now() / 1000)
+    const b24State = newNonce()
+    if (!store.bindMcpOAuthRequest(flowId, csrfCookie, portal, b24State)) {
+      throw createError({ statusCode: 400, statusMessage: 'OAuth request was already used', data: { error: 'invalid_request' } })
+    }
+
+    const clientId = String(config.bitrix24OauthClientId ?? '').trim()
+    const redirectUrl = String(config.bitrix24OauthRedirectUrl ?? '').trim()
+    store.createState({
+      state: b24State,
+      portal,
+      clientId,
+      csrfCookie,
+      expiresAt: Math.min(requestExpiresAt, now + FLOW_TTL_SEC),
+    })
+
+    setCookie(event, mcpOAuthCsrfCookieName(flowId), csrfCookie, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      path: '/api/oauth/',
+      maxAge: FLOW_TTL_SEC,
+    })
+
+    const authorizeUrl = new URL(`https://${portal}/oauth/authorize/`)
+    authorizeUrl.searchParams.set('client_id', clientId)
+    authorizeUrl.searchParams.set('state', b24State)
+    authorizeUrl.searchParams.set('redirect_uri', redirectUrl)
+    authorizeUrl.searchParams.set('scope', String(config.bitrix24OauthScope ?? 'user,task,im,disk'))
+    authorizeUrl.searchParams.set('response_type', 'code')
+    return sendRedirect(event, authorizeUrl.toString(), 302)
+  }
+
   const query = getQuery(event)
   const submittedFlowId = typeof query.flow_id === 'string' ? query.flow_id : ''
 
@@ -65,37 +104,7 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 400, statusMessage: 'Invalid Bitrix24 portal hostname', data: { error: 'invalid_request' } })
     }
 
-    const b24State = newNonce()
-    if (!store.bindMcpOAuthRequest(submittedFlowId, cookie, portal, b24State)) {
-      throw createError({ statusCode: 400, statusMessage: 'OAuth request was already used', data: { error: 'invalid_request' } })
-    }
-
-    const clientId = String(config.bitrix24OauthClientId ?? '').trim()
-    const redirectUrl = String(config.bitrix24OauthRedirectUrl ?? '').trim()
-    const csrfCookie = pending.csrfCookie
-    store.createState({
-      state: b24State,
-      portal,
-      clientId,
-      csrfCookie,
-      expiresAt: Math.min(pending.expiresAt, now + FLOW_TTL_SEC),
-    })
-
-    setCookie(event, cookieName, csrfCookie, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'lax',
-      path: '/api/oauth/',
-      maxAge: FLOW_TTL_SEC,
-    })
-
-    const authorizeUrl = new URL(`https://${portal}/oauth/authorize/`)
-    authorizeUrl.searchParams.set('client_id', clientId)
-    authorizeUrl.searchParams.set('state', b24State)
-    authorizeUrl.searchParams.set('redirect_uri', redirectUrl)
-    authorizeUrl.searchParams.set('scope', String(config.bitrix24OauthScope ?? 'user,task,im,disk'))
-    authorizeUrl.searchParams.set('response_type', 'code')
-    return sendRedirect(event, authorizeUrl.toString(), 302)
+    return launchBitrixAuthorization(submittedFlowId, pending.csrfCookie, portal, pending.expiresAt)
   }
 
   const clientId = typeof query.client_id === 'string' ? query.client_id : ''
@@ -139,6 +148,10 @@ export default defineEventHandler(async (event) => {
     csrfCookie,
     expiresAt,
   })
+  if (configuredPortal) {
+    return launchBitrixAuthorization(flowId, csrfCookie, configuredPortal, expiresAt)
+  }
+
   setCookie(event, mcpOAuthCsrfCookieName(flowId), csrfCookie, {
     httpOnly: true,
     secure: true,

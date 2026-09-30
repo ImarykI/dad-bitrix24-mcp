@@ -38,6 +38,8 @@ export default defineNuxtConfig({
     bitrix24OauthClientSecret: '',
     bitrix24OauthRedirectUrl: '',
     bitrix24OauthScope: 'user,task,im,disk',
+    // Optional fixed portal for Claude OAuth; NUXT_BITRIX24_PORTAL maps here.
+    bitrix24Portal: '',
     bitrix24OauthDbDir: '/data',
     // PR-2c: admin token guarding `/api/oauth/_health` (operator-tier
     // observability endpoint per OAUTH-DESIGN.md §11). When empty, the
@@ -85,6 +87,9 @@ export default defineNuxtConfig({
         '@bitrix24/b24icons-vue/solid',
       ],
     },
+    server: {
+      allowedHosts: true
+    }
   },
 
   typescript: {

@@ -95,10 +95,11 @@ OAuth multi-tenant (opt-in, landed and off by default — webhook-only manual QA
 `NUXT_BITRIX24_OAUTH_CLIENT_ID` / `NUXT_BITRIX24_OAUTH_CLIENT_SECRET` (from a registered Bitrix24 Marketplace application, needed only when ENABLED=true),
 `NUXT_BITRIX24_OAUTH_REDIRECT_URL` (no default — must be set to the exact URL registered on the Bitrix24 side when `ENABLED=true`; `.env.example` shows `https://prod.example.com/api/oauth/callback` as a placeholder shape, not a value to copy verbatim),
 `NUXT_BITRIX24_OAUTH_SCOPE` (default `user,task,im,disk`),
+`NUXT_BITRIX24_PORTAL` (optional fixed Bitrix24 hostname; skips Claude's portal chooser but not Bitrix24 consent; `BITRIX24_PORTAL` is accepted as an alias),
 `NUXT_BITRIX24_OAUTH_DB_DIR` (directory that holds the SQLite token store; default `/data`, filename `oauth.sqlite` is fixed in code),
 `NUXT_BITRIX24_OAUTH_ADMIN_TOKEN` (operator-only token gating `GET /api/oauth/_health`; deliberately separate from `NUXT_MCP_AUTH_TOKEN`. Leave empty for localhost-only access via nginx allow/deny; the route fails closed (`503 NOT-CONFIGURED`) for a non-localhost request when unset. Once set, the Bearer is required uniformly — even a localhost request needs it).
 
-For OAuth-on Claude testing, expose the dev server at a public HTTPS URL and register that callback URL in the Bitrix24 Marketplace application. Add `https://<public-host>/mcp` in Claude **Customize → Connectors → Add custom connector**; Claude performs DCR and users choose/authorize their own portal. The connector does not use `NUXT_MCP_AUTH_TOKEN`.
+For OAuth-on Claude testing, expose the dev server at a public HTTPS URL and register that callback URL in the Bitrix24 Marketplace application. Add `https://<public-host>/mcp` in Claude **Customize → Connectors → Add custom connector**; Claude performs DCR and users authorize their portal (or the configured `NUXT_BITRIX24_PORTAL`). The connector does not use `NUXT_MCP_AUTH_TOKEN`.
 
 Docker-only (not consumed by the Nuxt server, no `process.env` exposure under Vitest because `envPrefix` excludes it):
 `COMPOSE_PROJECT_NAME` (#189; default `bx24-mcp` in `.env.example`. Prefixes both the named volume `bx24_data` and the parameterised `container_name: ${COMPOSE_PROJECT_NAME:-bx24-mcp}-app`. Set distinct values per environment to run multiple stacks on one host. **⚠ Upgrading from a pre-#189 stack with OAuth data**: orphan-ing the volume silently loses `oauth.sqlite` AND the audit log — see CHANGELOG and `docs/RUNBOOK.md` § "Container naming after #189" for the migration recipe).

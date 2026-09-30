@@ -28,9 +28,10 @@ interface FakeEvent {
   _responseHeaders?: Record<string, string>
 }
 
-const runtimeConfig: { mcpAuthToken: string; bitrix24OauthEnabled: boolean } = {
+const runtimeConfig: { mcpAuthToken: string; bitrix24OauthEnabled: boolean; bitrix24OauthRedirectUrl: string } = {
   mcpAuthToken: '',
   bitrix24OauthEnabled: false,
+  bitrix24OauthRedirectUrl: 'https://mcp.example.com/api/oauth/callback',
 }
 vi.stubGlobal('useRuntimeConfig', () => runtimeConfig)
 
@@ -49,6 +50,7 @@ describe('mcp-auth middleware', () => {
   beforeEach(() => {
     runtimeConfig.mcpAuthToken = 'secret-token'
     runtimeConfig.bitrix24OauthEnabled = false
+    runtimeConfig.bitrix24OauthRedirectUrl = 'https://mcp.example.com/api/oauth/callback'
   })
 
   it('yields when NUXT_BITRIX24_OAUTH_ENABLED=true AND the request carries a Bearer header (toolkit middleware owns auth)', () => {
@@ -83,7 +85,7 @@ describe('mcp-auth middleware', () => {
     const event: FakeEvent = { _url: '/mcp', _headers: {} }
     expect(() => middleware(event)).toThrow(/Bearer required/)
     expect(event._responseHeaders?.['www-authenticate']).toBe(
-      'Bearer error="invalid_token", errorCode="BEARER-UNKNOWN", error_description="Bearer required"',
+      'Bearer error="invalid_token", errorCode="BEARER-UNKNOWN", error_description="Bearer required", resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp", scope="mcp:access offline_access"',
     )
   })
 

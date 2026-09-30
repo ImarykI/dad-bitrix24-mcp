@@ -109,6 +109,60 @@ export interface OAuthState {
   readonly expiresAt: number
 }
 
+export interface McpOAuthClient {
+  readonly clientId: string
+  readonly clientName: string
+  readonly redirectUris: readonly string[]
+  readonly createdAt: number
+}
+
+export interface McpOAuthRequest {
+  readonly flowId: string
+  readonly clientId: string
+  readonly redirectUri: string
+  readonly clientState: string
+  readonly codeChallenge: string
+  readonly resource: string
+  readonly scope: string
+  readonly csrfCookie: string
+  readonly portal: string | null
+  readonly b24State: string | null
+  readonly expiresAt: number
+}
+
+export type NewMcpOAuthRequest = Omit<McpOAuthRequest, 'portal' | 'b24State'>
+
+export interface McpOAuthGrant {
+  readonly clientId: string
+  readonly redirectUri: string
+  readonly codeChallenge: string
+  readonly resource: string
+  readonly scope: string
+  readonly memberId: string
+  readonly userId: number
+  readonly expiresAt: number
+}
+
+export interface McpOAuthTokenContext {
+  readonly clientId: string
+  readonly resource: string
+  readonly scope: string
+  readonly memberId: string
+  readonly userId: number
+  readonly expiresAt: number
+}
+
+export interface McpOAuthAccessTokenInspection extends BearerInspection {
+  readonly clientId: string
+  readonly resource: string
+  readonly expiresAt: number
+}
+
+export interface McpOAuthRefreshToken extends McpOAuthTokenContext {
+  readonly accessTokenHash: string
+  readonly tokenHash: string
+}
+
 const OAUTH_DB_FILENAME = 'oauth.sqlite'
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS oauth_tokens (
@@ -140,9 +194,72 @@ const SCHEMA_SQL = `
     csrf_cookie        TEXT    NOT NULL,
     expires_at         INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS mcp_oauth_clients (
+    client_id          TEXT    PRIMARY KEY,
+    client_name        TEXT    NOT NULL,
+    redirect_uris      TEXT    NOT NULL,
+    created_at         INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS mcp_oauth_requests (
+    flow_id            TEXT    PRIMARY KEY,
+    client_id          TEXT    NOT NULL,
+    redirect_uri       TEXT    NOT NULL,
+    client_state       TEXT    NOT NULL,
+    code_challenge     TEXT    NOT NULL,
+    resource           TEXT    NOT NULL,
+    scope              TEXT    NOT NULL,
+    csrf_cookie        TEXT    NOT NULL,
+    portal             TEXT,
+    b24_state          TEXT UNIQUE,
+    expires_at         INTEGER NOT NULL,
+    FOREIGN KEY (client_id) REFERENCES mcp_oauth_clients(client_id)
+  );
+  CREATE TABLE IF NOT EXISTS mcp_oauth_codes (
+    code_hash          TEXT    PRIMARY KEY,
+    client_id          TEXT    NOT NULL,
+    redirect_uri       TEXT    NOT NULL,
+    code_challenge     TEXT    NOT NULL,
+    resource           TEXT    NOT NULL,
+    scope              TEXT    NOT NULL,
+    member_id          TEXT    NOT NULL,
+    user_id            INTEGER NOT NULL,
+    expires_at         INTEGER NOT NULL,
+    FOREIGN KEY (client_id) REFERENCES mcp_oauth_clients(client_id),
+    FOREIGN KEY (member_id, user_id) REFERENCES oauth_tokens(member_id, user_id) ON DELETE CASCADE
+  );
+  CREATE TABLE IF NOT EXISTS mcp_oauth_access_tokens (
+    token_hash         TEXT    PRIMARY KEY,
+    client_id          TEXT    NOT NULL,
+    resource           TEXT    NOT NULL,
+    scope              TEXT    NOT NULL,
+    member_id          TEXT    NOT NULL,
+    user_id            INTEGER NOT NULL,
+    expires_at         INTEGER NOT NULL,
+    revoked_at         INTEGER,
+    created_at         INTEGER NOT NULL,
+    FOREIGN KEY (client_id) REFERENCES mcp_oauth_clients(client_id),
+    FOREIGN KEY (member_id, user_id) REFERENCES oauth_tokens(member_id, user_id) ON DELETE CASCADE
+  );
+  CREATE TABLE IF NOT EXISTS mcp_oauth_refresh_tokens (
+    token_hash         TEXT    PRIMARY KEY,
+    access_token_hash  TEXT    NOT NULL,
+    client_id          TEXT    NOT NULL,
+    resource           TEXT    NOT NULL,
+    scope              TEXT    NOT NULL,
+    member_id          TEXT    NOT NULL,
+    user_id            INTEGER NOT NULL,
+    expires_at         INTEGER NOT NULL,
+    revoked_at         INTEGER,
+    created_at         INTEGER NOT NULL,
+    FOREIGN KEY (client_id) REFERENCES mcp_oauth_clients(client_id),
+    FOREIGN KEY (member_id, user_id) REFERENCES oauth_tokens(member_id, user_id) ON DELETE CASCADE
+  );
   CREATE INDEX IF NOT EXISTS idx_oauth_user        ON oauth_tokens(user_id);
   CREATE INDEX IF NOT EXISTS idx_mcp_member_user   ON mcp_tokens(member_id, user_id);
   CREATE INDEX IF NOT EXISTS idx_state_expires     ON oauth_state(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_mcp_oauth_request_expiry ON mcp_oauth_requests(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_mcp_oauth_access_tenant ON mcp_oauth_access_tokens(member_id, user_id);
+  CREATE INDEX IF NOT EXISTS idx_mcp_oauth_refresh_tenant ON mcp_oauth_refresh_tokens(member_id, user_id);
 `
 
 /**
@@ -255,6 +372,19 @@ export interface TokenStore {
    * wired by this PR (see below).
    */
   createState: (state: OAuthState) => void
+  registerMcpOAuthClient: (client: Omit<McpOAuthClient, 'createdAt'>) => Promise<void>
+  getMcpOAuthClient: (clientId: string) => McpOAuthClient | undefined
+  createMcpOAuthRequest: (request: NewMcpOAuthRequest) => void
+  getMcpOAuthRequest: (flowId: string) => McpOAuthRequest | undefined
+  bindMcpOAuthRequest: (flowId: string, csrfCookie: string, portal: string, b24State: string) => boolean
+  consumeMcpOAuthRequest: (b24State: string) => McpOAuthRequest | undefined
+  createMcpOAuthCode: (code: string, grant: McpOAuthGrant) => void
+  consumeMcpOAuthCode: (code: string) => McpOAuthGrant | undefined
+  createMcpOAuthAccessToken: (context: McpOAuthTokenContext, actor: AuditActor) => Promise<MintedMcpToken>
+  inspectMcpOAuthAccessToken: (tokenHash: string) => McpOAuthAccessTokenInspection | undefined
+  revokeMcpOAuthAccessToken: (tokenHash: string, actor: AuditActor) => Promise<void>
+  createMcpOAuthRefreshToken: (context: McpOAuthTokenContext, accessTokenHash: string, actor: AuditActor) => Promise<MintedMcpToken>
+  consumeMcpOAuthRefreshToken: (tokenHash: string, actor: AuditActor) => Promise<McpOAuthRefreshToken | undefined>
   /**
    * One-shot atomic read-and-delete of a state nonce. Returns the
    * persisted row if the state existed, `undefined` if it never did.
@@ -323,7 +453,7 @@ export interface ListedMcpToken {
 export interface HealthCounts {
   /** Number of `oauth_tokens` rows — distinct `(member_id, user_id)` tenants. */
   readonly tenants: number
-  /** Number of active `mcp_tokens` rows (`revoked_at IS NULL`) — issued Bearers. */
+  /** Active manual Bearers plus non-expired OAuth access tokens. */
   readonly bearers: number
   /** Number of `oauth_state` rows still inside the 5-min TTL. */
   readonly pendingStates: number
@@ -372,8 +502,24 @@ export function createTokenStore(db: Database.Database): TokenStore {
        WHERE member_id = ? AND user_id = ? AND revoked_at IS NULL
        ORDER BY created_at DESC`,
     ),
+     listMcpOAuthAccessTokens: db.prepare<[string, number]>(
+      `SELECT token_hash AS tokenHash FROM mcp_oauth_access_tokens
+       WHERE member_id = ? AND user_id = ? AND revoked_at IS NULL`,
+     ),
+     listMcpOAuthRefreshTokens: db.prepare<[string, number]>(
+      `SELECT token_hash AS tokenHash FROM mcp_oauth_refresh_tokens
+       WHERE member_id = ? AND user_id = ? AND revoked_at IS NULL`,
+     ),
     markRefreshFailed: db.prepare<[number, string, number]>(
       `UPDATE mcp_tokens SET revoked_at = ?
+       WHERE member_id = ? AND user_id = ? AND revoked_at IS NULL`,
+    ),
+    markOAuthAccessRefreshFailed: db.prepare<[number, string, number]>(
+      `UPDATE mcp_oauth_access_tokens SET revoked_at = ?
+       WHERE member_id = ? AND user_id = ? AND revoked_at IS NULL`,
+    ),
+    markOAuthRefreshRefreshFailed: db.prepare<[number, string, number]>(
+      `UPDATE mcp_oauth_refresh_tokens SET revoked_at = ?
        WHERE member_id = ? AND user_id = ? AND revoked_at IS NULL`,
     ),
     createMcpToken: db.prepare<[string, string, number, string | null, number]>(
@@ -396,6 +542,84 @@ export function createTokenStore(db: Database.Database): TokenStore {
       `INSERT INTO oauth_state (state, portal, client_id, csrf_cookie, expires_at)
        VALUES (?, ?, ?, ?, ?)`,
     ),
+    registerMcpOAuthClient: db.prepare<[string, string, string, number]>(
+      `INSERT INTO mcp_oauth_clients (client_id, client_name, redirect_uris, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ),
+    getMcpOAuthClient: db.prepare<[string]>(
+      `SELECT client_id AS clientId, client_name AS clientName,
+              redirect_uris AS redirectUrisJson, created_at AS createdAt
+       FROM mcp_oauth_clients WHERE client_id = ?`,
+    ),
+    createMcpOAuthRequest: db.prepare<[string, string, string, string, string, string, string, string, number]>(
+      `INSERT INTO mcp_oauth_requests (
+         flow_id, client_id, redirect_uri, client_state, code_challenge,
+         resource, scope, csrf_cookie, expires_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+     getMcpOAuthRequest: db.prepare<[string]>(
+      `SELECT flow_id AS flowId, client_id AS clientId,
+            redirect_uri AS redirectUri, client_state AS clientState,
+            code_challenge AS codeChallenge, resource, scope,
+            csrf_cookie AS csrfCookie, portal, b24_state AS b24State,
+            expires_at AS expiresAt
+       FROM mcp_oauth_requests WHERE flow_id = ?`,
+     ),
+    bindMcpOAuthRequest: db.prepare<[string, string, string, string]>(
+      `UPDATE mcp_oauth_requests SET portal = ?, b24_state = ?
+       WHERE flow_id = ? AND csrf_cookie = ? AND b24_state IS NULL`,
+    ),
+    consumeMcpOAuthRequest: db.prepare<[string]>(
+      `DELETE FROM mcp_oauth_requests WHERE b24_state = ?
+       RETURNING flow_id AS flowId, client_id AS clientId,
+                 redirect_uri AS redirectUri, client_state AS clientState,
+                 code_challenge AS codeChallenge, resource, scope,
+                 csrf_cookie AS csrfCookie, portal, b24_state AS b24State,
+                 expires_at AS expiresAt`,
+    ),
+    createMcpOAuthCode: db.prepare<[string, string, string, string, string, string, string, number, number]>(
+      `INSERT INTO mcp_oauth_codes (
+         code_hash, client_id, redirect_uri, code_challenge, resource, scope,
+         member_id, user_id, expires_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    consumeMcpOAuthCode: db.prepare<[string]>(
+      `DELETE FROM mcp_oauth_codes WHERE code_hash = ?
+       RETURNING client_id AS clientId, redirect_uri AS redirectUri,
+                 code_challenge AS codeChallenge, resource, scope,
+                 member_id AS memberId, user_id AS userId, expires_at AS expiresAt`,
+    ),
+    createMcpOAuthAccessToken: db.prepare<[string, string, string, string, string, number, number, number]>(
+      `INSERT INTO mcp_oauth_access_tokens (
+         token_hash, client_id, resource, scope, member_id, user_id,
+         expires_at, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    inspectMcpOAuthAccessToken: db.prepare<[string]>(
+      `SELECT member_id AS memberId, user_id AS userId, revoked_at AS revokedAt,
+              client_id AS clientId, resource, expires_at AS expiresAt
+       FROM mcp_oauth_access_tokens WHERE token_hash = ?`,
+    ),
+    revokeMcpOAuthAccessToken: db.prepare<[number, string]>(
+      `UPDATE mcp_oauth_access_tokens SET revoked_at = ?
+       WHERE token_hash = ? AND revoked_at IS NULL`,
+    ),
+    createMcpOAuthRefreshToken: db.prepare<[string, string, string, string, string, string, number, number, number]>(
+      `INSERT INTO mcp_oauth_refresh_tokens (
+         token_hash, access_token_hash, client_id, resource, scope,
+         member_id, user_id, expires_at, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getMcpOAuthRefreshToken: db.prepare<[string]>(
+      `SELECT token_hash AS tokenHash, access_token_hash AS accessTokenHash,
+              client_id AS clientId, resource, scope, member_id AS memberId,
+              user_id AS userId, expires_at AS expiresAt
+       FROM mcp_oauth_refresh_tokens WHERE token_hash = ? AND revoked_at IS NULL`,
+    ),
+    consumeMcpOAuthRefreshToken: db.prepare<[number, string]>(
+      `UPDATE mcp_oauth_refresh_tokens SET revoked_at = ?
+       WHERE token_hash = ? AND revoked_at IS NULL`,
+    ),
     // `DELETE ... RETURNING` is a single atomic statement (SQLite ≥ 3.35,
     // shipped with better-sqlite3 11.x). The earlier `SELECT` + `DELETE`
     // pair was a TOCTOU window: two concurrent `/callback` requests for
@@ -412,9 +636,19 @@ export function createTokenStore(db: Database.Database): TokenStore {
                  csrf_cookie AS csrfCookie, expires_at AS expiresAt`,
     ),
     pruneExpiredStates: db.prepare<[number]>(`DELETE FROM oauth_state WHERE expires_at < ?`),
+    pruneExpiredMcpOAuthRequests: db.prepare<[number]>(`DELETE FROM mcp_oauth_requests WHERE expires_at < ?`),
+    pruneExpiredMcpOAuthCodes: db.prepare<[number]>(`DELETE FROM mcp_oauth_codes WHERE expires_at < ?`),
+    pruneExpiredMcpOAuthAccessTokens: db.prepare<[number]>(`DELETE FROM mcp_oauth_access_tokens WHERE expires_at < ? OR revoked_at IS NOT NULL`),
+    pruneExpiredMcpOAuthRefreshTokens: db.prepare<[number]>(`DELETE FROM mcp_oauth_refresh_tokens WHERE expires_at < ? OR revoked_at IS NOT NULL`),
     countTenants: db.prepare(`SELECT COUNT(*) AS n FROM oauth_tokens`),
-    countActiveBearers: db.prepare(`SELECT COUNT(*) AS n FROM mcp_tokens WHERE revoked_at IS NULL`),
-    countPendingStates: db.prepare<[number]>(`SELECT COUNT(*) AS n FROM oauth_state WHERE expires_at > ?`),
+    countActiveBearers: db.prepare<[number]>(
+      `SELECT (SELECT COUNT(*) FROM mcp_tokens WHERE revoked_at IS NULL)
+            + (SELECT COUNT(*) FROM mcp_oauth_access_tokens WHERE revoked_at IS NULL AND expires_at > ?) AS n`,
+    ),
+    countPendingStates: db.prepare<[number, number]>(
+      `SELECT (SELECT COUNT(*) FROM oauth_state WHERE expires_at > ?)
+            + (SELECT COUNT(*) FROM mcp_oauth_requests WHERE expires_at > ?) AS n`,
+    ),
   }
 
   return {
@@ -462,47 +696,61 @@ export function createTokenStore(db: Database.Database): TokenStore {
       // safe (each `mcp.revoke` event repeats but the DB UPDATE remains
       // a no-op against rows already stamped with `revoked_at`).
       const active = stmts.listMcpTokens.all(memberId, userId) as Array<{ bearerHash: string }>
-      await Promise.all(active.map(({ bearerHash }) => recordAuditEvent({
-        event: 'mcp.revoke',
-        portal: memberId,
-        userId: String(userId),
-        mcpTokenId: bearerHash,
-        actor: 'system',
-      })))
-      stmts.markRefreshFailed.run(nowSec(), memberId, userId)
+      const oauthActive = [
+        ...(stmts.listMcpOAuthAccessTokens.all(memberId, userId) as Array<{ tokenHash: string }>),
+        ...(stmts.listMcpOAuthRefreshTokens.all(memberId, userId) as Array<{ tokenHash: string }>),
+      ]
+      await Promise.all([
+        ...active.map(({ bearerHash }) => recordAuditEvent({
+          event: 'mcp.revoke',
+          portal: memberId,
+          userId: String(userId),
+          mcpTokenId: bearerHash,
+          actor: 'system',
+        })),
+        ...oauthActive.map(({ tokenHash }) => recordAuditEvent({
+          event: 'mcp.revoke',
+          portal: memberId,
+          userId: String(userId),
+          mcpTokenId: tokenHash,
+          actor: 'system',
+        })),
+      ])
+      const now = nowSec()
+      stmts.markRefreshFailed.run(now, memberId, userId)
+      stmts.markOAuthAccessRefreshFailed.run(now, memberId, userId)
+      stmts.markOAuthRefreshRefreshFailed.run(now, memberId, userId)
     },
 
     deleteTenant: async (memberId, userId, actor) => {
-      // Same bulk-audit-first contract as markRefreshFailed: N `mcp.revoke`
-      // audits, then a final `oauth.delete`; on ANY rejection nothing in
-      // the DB changes. Forensic posture: the `mcp.revoke` batch runs via
-      // `Promise.all` (fail-fast — any single revoke audit failing skips
-      // the delete), and the `oauth.delete` audit is awaited AFTER the
-      // batch so a missing `oauth.delete` next to N `mcp.revoke` records
-      // unambiguously marks a partial-failure tenant. With the alternative
-      // (all N+1 in one Promise.all) the failure mode would still be
-      // skip-the-write, but `mcp.revoke` and `oauth.delete` would race —
-      // a GDPR-style data-subject request reading the log out-of-order
-      // would have to disambiguate. The DB DELETE relies on SQLite's
-      // built-in per-statement atomicity for the FK CASCADE: `DELETE FROM
-      // oauth_tokens` and the CASCADE-driven `mcp_tokens` wipe land in
-      // the same implicit transaction. No outer `db.transaction(...)`
-      // needed.
       const active = stmts.listMcpTokens.all(memberId, userId) as Array<{ bearerHash: string }>
-      await Promise.all(active.map(({ bearerHash }) => recordAuditEvent({
-        event: 'mcp.revoke',
-        portal: memberId,
-        userId: String(userId),
-        mcpTokenId: bearerHash,
-        actor,
-      })))
+      const oauthActive = [
+        ...(stmts.listMcpOAuthAccessTokens.all(memberId, userId) as Array<{ tokenHash: string }>),
+        ...(stmts.listMcpOAuthRefreshTokens.all(memberId, userId) as Array<{ tokenHash: string }>),
+      ]
+      await Promise.all([
+        ...active.map(({ bearerHash }) => recordAuditEvent({
+          event: 'mcp.revoke',
+          portal: memberId,
+          userId: String(userId),
+          mcpTokenId: bearerHash,
+          actor,
+        })),
+        ...oauthActive.map(({ tokenHash }) => recordAuditEvent({
+          event: 'mcp.revoke',
+          portal: memberId,
+          userId: String(userId),
+          mcpTokenId: tokenHash,
+          actor,
+        })),
+      ])
       await recordAuditEvent({
         event: 'oauth.delete',
         portal: memberId,
         userId: String(userId),
         actor,
       })
-      stmts.deleteTokens.run(memberId, userId) // CASCADE wipes mcp_tokens
+      stmts.deleteTokens.run(memberId, userId)
     },
 
     createMcpToken: async (memberId, userId, label, actor) => {
@@ -579,6 +827,123 @@ export function createTokenStore(db: Database.Database): TokenStore {
       )
     },
 
+    registerMcpOAuthClient: async (client) => {
+      await recordAuditEvent({
+        event: 'mcp.client.register',
+        portal: 'claude-connector',
+        userId: '0',
+        actor: 'system',
+      })
+      stmts.registerMcpOAuthClient.run(
+        client.clientId,
+        client.clientName,
+        JSON.stringify(client.redirectUris),
+        nowSec(),
+      )
+    },
+
+    getMcpOAuthClient: (clientId) => {
+      const row = stmts.getMcpOAuthClient.get(clientId) as
+        | { clientId: string; clientName: string; redirectUrisJson: string; createdAt: number }
+        | undefined
+      if (!row) return undefined
+      let redirectUris: string[]
+      try {
+        const parsed: unknown = JSON.parse(row.redirectUrisJson)
+        if (!Array.isArray(parsed) || !parsed.every(uri => typeof uri === 'string')) return undefined
+        redirectUris = parsed
+      }
+      catch {
+        return undefined
+      }
+      return { clientId: row.clientId, clientName: row.clientName, redirectUris, createdAt: row.createdAt }
+    },
+
+    createMcpOAuthRequest: request => {
+      stmts.createMcpOAuthRequest.run(
+        request.flowId,
+        request.clientId,
+        request.redirectUri,
+        request.clientState,
+        request.codeChallenge,
+        request.resource,
+        request.scope,
+        request.csrfCookie,
+        request.expiresAt,
+      )
+    },
+
+    getMcpOAuthRequest: flowId =>
+      stmts.getMcpOAuthRequest.get(flowId) as McpOAuthRequest | undefined,
+
+    bindMcpOAuthRequest: (flowId, csrfCookie, portal, b24State) =>
+      stmts.bindMcpOAuthRequest.run(portal, b24State, flowId, csrfCookie).changes === 1,
+
+    consumeMcpOAuthRequest: b24State =>
+      stmts.consumeMcpOAuthRequest.get(b24State) as McpOAuthRequest | undefined,
+
+    createMcpOAuthCode: (code, grant) => {
+      stmts.createMcpOAuthCode.run(
+        hashBearer(code), grant.clientId, grant.redirectUri, grant.codeChallenge,
+        grant.resource, grant.scope, grant.memberId, grant.userId, grant.expiresAt,
+      )
+    },
+
+    consumeMcpOAuthCode: code =>
+      stmts.consumeMcpOAuthCode.get(hashBearer(code)) as McpOAuthGrant | undefined,
+
+    createMcpOAuthAccessToken: async (context, actor) => {
+      const token = randomBytes(32).toString('hex')
+      const tokenHash = hashBearer(token)
+      await recordAuditEvent({
+        event: 'mcp.create', portal: context.memberId, userId: String(context.userId),
+        mcpTokenId: tokenHash, actor,
+      })
+      stmts.createMcpOAuthAccessToken.run(
+        tokenHash, context.clientId, context.resource, context.scope,
+        context.memberId, context.userId, context.expiresAt, nowSec(),
+      )
+      return { bearer: token, bearerHash: tokenHash }
+    },
+
+    inspectMcpOAuthAccessToken: tokenHash =>
+      stmts.inspectMcpOAuthAccessToken.get(tokenHash) as McpOAuthAccessTokenInspection | undefined,
+
+    revokeMcpOAuthAccessToken: async (tokenHash, actor) => {
+      const row = stmts.inspectMcpOAuthAccessToken.get(tokenHash) as McpOAuthAccessTokenInspection | undefined
+      if (!row || row.revokedAt !== null) return
+      await recordAuditEvent({
+        event: 'mcp.revoke', portal: row.memberId, userId: String(row.userId),
+        mcpTokenId: tokenHash, actor,
+      })
+      stmts.revokeMcpOAuthAccessToken.run(nowSec(), tokenHash)
+    },
+
+    createMcpOAuthRefreshToken: async (context, accessTokenHash, actor) => {
+      const token = randomBytes(32).toString('hex')
+      const tokenHash = hashBearer(token)
+      await recordAuditEvent({
+        event: 'mcp.create', portal: context.memberId, userId: String(context.userId),
+        mcpTokenId: tokenHash, actor,
+      })
+      stmts.createMcpOAuthRefreshToken.run(
+        tokenHash, accessTokenHash, context.clientId, context.resource,
+        context.scope, context.memberId, context.userId, context.expiresAt, nowSec(),
+      )
+      return { bearer: token, bearerHash: tokenHash }
+    },
+
+    consumeMcpOAuthRefreshToken: async (tokenHash, actor) => {
+      const row = stmts.getMcpOAuthRefreshToken.get(tokenHash) as McpOAuthRefreshToken | undefined
+      if (!row) return undefined
+      await recordAuditEvent({
+        event: 'mcp.revoke', portal: row.memberId, userId: String(row.userId),
+        mcpTokenId: tokenHash, actor,
+      })
+      const changed = stmts.consumeMcpOAuthRefreshToken.run(nowSec(), tokenHash).changes
+      return changed === 1 ? row : undefined
+    },
+
     consumeState: state => {
       // Atomic single-statement read-and-delete (see `stmts.consumeState`
       // for the TOCTOU rationale). The nonce is removed whether expired
@@ -590,14 +955,21 @@ export function createTokenStore(db: Database.Database): TokenStore {
       return stmts.consumeState.get(state) as OAuthState | undefined
     },
 
-    pruneExpiredStates: () => stmts.pruneExpiredStates.run(nowSec()).changes,
+    pruneExpiredStates: () => {
+      const now = nowSec()
+      return stmts.pruneExpiredStates.run(now).changes
+        + stmts.pruneExpiredMcpOAuthRequests.run(now).changes
+        + stmts.pruneExpiredMcpOAuthCodes.run(now).changes
+        + stmts.pruneExpiredMcpOAuthAccessTokens.run(now).changes
+        + stmts.pruneExpiredMcpOAuthRefreshTokens.run(now).changes
+    },
 
     getHealthCounts: () => {
       const now = nowSec()
       return {
         tenants: (stmts.countTenants.get() as { n: number }).n,
-        bearers: (stmts.countActiveBearers.get() as { n: number }).n,
-        pendingStates: (stmts.countPendingStates.get(now) as { n: number }).n,
+        bearers: (stmts.countActiveBearers.get(now) as { n: number }).n,
+        pendingStates: (stmts.countPendingStates.get(now, now) as { n: number }).n,
       }
     },
   }

@@ -41,6 +41,20 @@ OAuth 2.0 via `B24OAuth` (shipped by `@bitrix24/b24jssdk`) replaces both shortco
 
 ## 3. End-to-end flow
 
+### Claude Connectors OAuth flow
+
+1. Claude calls `/mcp` without a token and receives `401` with the protected-resource metadata URL.
+2. Claude reads the resource and authorization-server metadata, registers a public client at `/api/oauth/register`, then opens `/api/oauth/authorize` with `resource`, client state, and an S256 PKCE challenge.
+3. The server validates the client, exact Claude callback URI, resource, and PKCE request; a CSRF-bound portal form lets the user choose their Bitrix24 portal.
+4. The user signs in and consents at that Bitrix24 portal. `/api/oauth/callback` exchanges the Bitrix code, persists the per-user Bitrix tokens, creates a short-lived MCP authorization code, and redirects to `https://claude.ai/api/mcp/auth_callback` with the original client state and issuer.
+5. Claude exchanges the code plus its PKCE verifier and resource at `/api/oauth/token`. The MCP server returns a one-hour, audience-bound access token and a rotating refresh token. Raw tokens are never persisted.
+
+Every MCP access token resolves to one `(member_id, user_id)` tenant, and tool calls still pass through `useBitrix24Tenant()`. The authorization server supports only the hosted Claude callback URI in DCR; it does not fetch client metadata documents or accept arbitrary redirect targets.
+
+### Legacy manual-Bearer flow
+
+The existing `/api/oauth/install` → `/api/oauth/callback` flow remains available for MCP clients that do not implement OAuth discovery. It displays a per-user Bearer once for manual configuration; it is not required for Claude Connectors.
+
 ```
                        ┌──────────────┐
                   1.   │   End user   │
@@ -94,7 +108,7 @@ OAuth 2.0 via `B24OAuth` (shipped by `@bitrix24/b24jssdk`) replaces both shortco
                                            └──────────────────┘
 ```
 
-Steps 1–5 happen once per (portal × user). The install page is reachable through the landing at `/` (CTA "Install on your portal", picks `?portal=<host>`); the final HTML page after step 5 includes paste instructions for **Claude, Cursor, and Windsurf** clients — see issue tracker for the open UX question on cross-client.
+The legacy install page is reachable through the landing at `/` (CTA "Install on your portal", picks `?portal=<host>`). Its final HTML page displays the manual Bearer once for clients that need it.
 
 ## 4. Environment variables
 
@@ -166,6 +180,8 @@ CREATE INDEX idx_mcp_member_user ON mcp_tokens(member_id, user_id);
 CREATE INDEX idx_state_expires ON oauth_state(expires_at);
 ```
 
+The Claude authorization-server flow adds `mcp_oauth_clients` (DCR registrations), `mcp_oauth_requests` (short-lived CSRF/PKCE state bridged through Bitrix24), `mcp_oauth_codes` (hashed one-time authorization codes), `mcp_oauth_access_tokens` (hashed, audience-bound, expiring access tokens), and `mcp_oauth_refresh_tokens` (hashed, single-use rotating refresh tokens). These rows reference the tenant composite key and are revoked/audited with its lifecycle. The legacy `mcp_tokens` table remains for manually minted Bearers.
+
 **The composite PK `(member_id, user_id)`** is intentional: one portal can have many MCP users, each with their own OAuth token row. Without it, the second user on the same portal would overwrite the first's tokens and silently impersonate them — a fundamental violation of per-user identity (the whole reason we're doing OAuth).
 
 **Refresh strategy.** `useBitrix24OAuth(memberId, userId)` checks `access_expires_at` on every call. If expired (or expiring within 60 s), it refreshes via the SDK's `B24OAuth` refresh hook, writes the new tokens back via `UPDATE oauth_tokens` in a single transaction. On refresh failure (HTTP 400 `invalid_grant` — refresh token revoked or app uninstalled), the row is **not** deleted; `markRefreshFailed(memberId, userId)` stamps `revoked_at` only on `mcp_tokens` rows that point at *that specific* `(member_id, user_id)` pair — other users on the same portal are untouched. The MCP responds 401 to the agent with "tenant disconnected — re-authorize at /api/oauth/install".
@@ -180,10 +196,10 @@ CREATE INDEX idx_state_expires ON oauth_state(expires_at);
 
 **The hardest part.** Today there is exactly one `NUXT_MCP_AUTH_TOKEN`; everyone with that token gets every tool call. With OAuth, the Bearer must identify *which* tenant the caller is.
 
-**Chosen approach: per-user Bearer minted at install.**
+**Chosen approach: per-user MCP OAuth tokens, with the legacy manual Bearer as fallback.**
 
-- At step 5 in the flow above, the MCP generates a fresh `crypto.randomBytes(32).toString('hex')` Bearer (256 bits of entropy), stores `sha256(bearer)` + `member_id` + `user_id` in `mcp_tokens`, and presents the raw value to the user *once* with paste instructions.
-- `server/middleware/mcp-auth.ts` no longer compares against a single constant when the OAuth flag is on: it yields to the toolkit middleware in `server/mcp/index.ts`, which hashes the incoming Bearer with sha256 and looks up the row via `inspectBearer(hash)` (PR-2c-bearer / #217). Match → wrap `next()` in `runWithTenant({memberId, userId, requestId}, …)`. No match → 401 with errorCode `BEARER-UNKNOWN`. Revoked row (`revoked_at IS NOT NULL`) → 401 `BEARER-REVOKED`. Active row whose `oauth_tokens` parent was deleted → 401 `BEARER-ORPHAN` (CASCADE prevents this but we log defensively).
+- The Claude flow requires authorization code + S256 PKCE and an exact registered redirect URI. It issues random 256-bit MCP access and refresh tokens, stores only their SHA-256 hashes, binds access tokens to `${issuer}/mcp`, expires access tokens after one hour, and rotates refresh tokens on every use.
+- `server/middleware/mcp-auth.ts` bypasses the shared `NUXT_MCP_AUTH_TOKEN` when OAuth is enabled. The toolkit middleware in `server/mcp/index.ts` checks MCP OAuth tokens for revocation, expiry, and exact resource audience before wrapping `next()` in `runWithTenant({memberId, userId, requestId}, …)`. Legacy `mcp_tokens` Bearers remain accepted for clients using `/api/oauth/install`.
 - Tools call `useBitrix24Tenant()` which dispatches:
   - if `NUXT_BITRIX24_OAUTH_ENABLED=false` → returns the webhook singleton (`useBitrix24()`) as today.
   - if `NUXT_BITRIX24_OAUTH_ENABLED=true` → returns `useBitrix24OAuth(tenant.memberId, tenant.userId)`, where `tenant` comes from the per-request context (see §7 on `AsyncLocalStorage`).
@@ -200,8 +216,10 @@ CREATE INDEX idx_state_expires ON oauth_state(expires_at);
 - `server/utils/token-store.ts` — thin wrapper over `better-sqlite3`. Functions: `getTokens(memberId, userId)`, `upsertTokens(row)`, `markRefreshFailed(memberId, userId)`, `deleteTenant(memberId, userId)`, `findByBearerHash(hash)` (hot-path lookup — filters revoked rows, returns `BearerLookup | undefined`), `inspectBearer(hash)` (middleware lookup — does NOT filter revoked, returns `BearerInspection | undefined` carrying `revokedAt` so the caller can tell `bearer-unknown` from `bearer-revoked`; added in PR-2c-bearer #217), `createMcpToken(memberId, userId, label)`, `revokeMcpToken(bearerHash)`, `createState(...)`, `consumeState(state)`, `pruneExpiredStates()`, `listMcpTokens(memberId, userId)` (active Bearers for a tenant, newest-first — used by the `bx24mcp_list_sessions` operator tool; returns `bearerHashPrefix` not the full hash; landed with issue #212). No ORM, prepared statements only.
 - `server/utils/bitrix24-tenant.ts` — `useBitrix24Tenant(): TypeB24`. Reads the per-request tenant context from `AsyncLocalStorage`. The dispatcher tools use. `TypeB24` is the SDK-exported structural interface that both `B24Hook` and `B24OAuth` implement (confirmed against `@bitrix24/b24jssdk@1.1.2` `.d.ts`, re-verified at 1.3.0 — see "Typing" below), so no union and no local alias are needed.
 - `server/utils/request-context.ts` — `AsyncLocalStorage<TenantContext>` and `runWithTenant(ctx: TenantContext, fn)` helper. The MCP middleware wraps every request body in this context so tool handlers (which do not receive `event` from `@nuxtjs/mcp-toolkit`) can still resolve the tenant. The `TenantContext` shape is `{ memberId, userId, requestId? }` — `requestId` is an **optional** 16-byte hex correlation id introduced by PR-2d as forward-compat for §11's observability contract; PR-2c populates it inside the middleware wrap, but the field stays optional so test fixtures that construct `TenantContext` with just `{memberId, userId}` keep compiling. PR-2c should also ship a `getRequestId(): string` helper that throws when the field is `undefined` — that's the runtime guard against "middleware not wired" bugs sliding into staging unseen.
-- `server/api/oauth/install.get.ts` — generates `state`, validates `?portal=` against an allow-list regex (see §8), sets a first-party `SameSite=Lax` CSRF cookie, redirects to `https://<portal>/oauth/authorize/?client_id=…&state=…&redirect_uri=…&scope=<NUXT_BITRIX24_OAUTH_SCOPE>`. As an operator-UX convenience, a browser (`Accept: text/html`) hitting the route with no `?portal=` gets a tiny HTML landing form instead of the JSON 400 (the form's GET submission re-enters the same handler with `?portal=` filled in). CLI callers without `text/html` in their `Accept` header — `curl`, MCP probes, the docker-smoke script — keep the byte-identical JSON **body and status code** (the response now also carries `X-Frame-Options: DENY` and a strict CSP, even on JSON throws — uniform contract); behind-the-scenes the rate-limit middleware (#221) skips landing-form renders (no `?portal=`) so F5-ing the form cannot self-ban the operator from the very page they're using.
-- `server/api/oauth/callback.get.ts` — verifies `state` matches the cookie + portal + client_id, consumes it, exchanges `code` for tokens, upserts `oauth_tokens`, mints a `mcp_tokens` row, renders a minimal HTML page with the Bearer + paste instructions. Sends `Cache-Control: no-store, no-cache` + `Pragma: no-cache`.
+- `server/api/oauth/install.get.ts` — legacy manual-Bearer install form; validates `?portal=`, starts Bitrix24 OAuth, then displays a one-time Bearer for clients without OAuth support.
+- `server/api/oauth/register.post.ts`, `authorize.get.ts`, and `token.post.ts` — Claude DCR, PKCE authorization, form-urlencoded authorization-code exchange, and rotating refresh tokens.
+- `server/api/oauth/callback.get.ts` — shared Bitrix24 callback. Manual installs mint an HTML Bearer page; Claude authorization exchanges Bitrix tokens, mints an MCP authorization code, and redirects to the registered Claude callback.
+- `server/utils/mcp-oauth-metadata.ts` and `mcp-oauth-client.ts` — protected-resource and authorization-server discovery, DCR validation, and the fixed hosted callback URI.
 - `server/plugins/oauth-schema.ts` — runs `CREATE TABLE IF NOT EXISTS` on Nitro startup when `NUXT_BITRIX24_OAUTH_ENABLED=true`.
 
 **Changed files:**
@@ -258,7 +276,7 @@ Confirmed empirically by `tests/unit/als-propagation.test.ts` (spike for #60, fi
    - A first-party `SameSite=Lax; HttpOnly; Secure` CSRF cookie set on `/install` and validated on `/callback`.
 
    The callback rejects (400) any state that fails any of the three bindings. Persisting state in SQLite (not in process memory) means in-flight authorize flows survive process restarts during deploys.
-3. **Portal allow-list.** The `?portal=` query parameter is validated against `PORTAL_ALLOW_LIST_RE` (`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.bitrix24\.(com|ru|eu|de|by|kz|ua)$`) before any redirect. Anything else returns 400. Prevents the install endpoint from being used as an open redirector. Since issue #220 the regex lives in `server/utils/portal-validation.ts` and is **shared** by `install.get.ts`, `callback.get.ts` (validating the exchange-response `domain`), and the refresh path in `bitrix24-oauth.ts` — one rule, three Bitrix24-facing surfaces, so they cannot drift. The same module's `validateClientEndpoint` / `validateServerEndpoint` guard the `client_endpoint` / `server_endpoint` URLs the SDK consumes on refresh (HTTPS-only, no userinfo, no non-standard port, hostname must match the stored portal / a known central OAuth host).
+3. **Portal allow-list.** The `?portal=` query parameter is validated against `PORTAL_ALLOW_LIST_RE` (`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.bitrix24\.(com|ru|eu|de|by|kz|ua)$`) before any redirect. Anything else returns 400. Prevents the install endpoint from being used as an open redirector. Since issue #220 the regex lives in `server/utils/portal-validation.ts` and is shared by install, callback, and refresh validation. The token-exchange `domain` may be a tenant portal or one of the known central OAuth hosts (`oauth.bitrix.info`, `oauth.bitrix24.tech`); central hosts are never stored as the tenant portal. The validated `stateRow.portal` remains canonical. The same module's `validateClientEndpoint` / `validateServerEndpoint` guard the `client_endpoint` / `server_endpoint` URLs the SDK consumes on refresh (HTTPS-only, no userinfo, no non-standard port, hostname must match the stored portal / a known central OAuth host).
 4. **Redirect URI** is locked at the Bitrix24 app level *and* re-checked server-side against `NUXT_BITRIX24_OAUTH_REDIRECT_URL`.
 5. **Constant-time Bearer comparison is gone — by design.** The middleware looks up `sha256(bearer)` in SQLite. A DB lookup is not constant-time (existence-vs-not-exists differs in WAL hit / miss). The trade-off is explicit: 256 bits of entropy in the Bearer (from `crypto.randomBytes(32)`) makes a timing oracle on existence statistically irrelevant. If a future audit disagrees, the mitigation is to perform the lookup unconditionally and constant-time-compare the result against a sentinel.
 6. **SHA-256 brute-force at rest.** SHA-256 is fast; a DB exfiltration combined with low-entropy Bearers would be brute-forceable on GPU. Mitigation is upstream entropy: `crypto.randomBytes(32)` ≥ 256 bits. Threat model documented in `docs/SECURITY.md` once it lands (issue #50 follow-up).
@@ -326,7 +344,7 @@ The actual landed order **inverts** the original PR-2/PR-3/PR-4 plan after PR-2a
 2. Mount a persistent volume at `/data` (or wherever `NUXT_BITRIX24_OAUTH_DB_DIR` points). Confirm it is on local SSD, not NFS.
 3. Set the OAuth env vars in `.env` (or your secrets manager).
 4. Restart with `NUXT_BITRIX24_OAUTH_ENABLED=true`.
-5. Each end user visits `https://<your-mcp>/api/oauth/install?portal=<theirportal>`, completes authorize, copies the Bearer into their Claude / Cursor / Windsurf connector.
+5. Claude users add `https://<your-mcp>/mcp` as a custom connector and click **Connect**; Claude discovers and registers through DCR. Users select their portal and approve Bitrix24 access in the browser. Clients without OAuth support can still use `/api/oauth/install` and manually configure the displayed Bearer.
 6. Old `NUXT_MCP_AUTH_TOKEN` continues to work for the webhook path during transition; remove it from each client when the user has migrated.
 7. Rollback: `NUXT_BITRIX24_OAUTH_ENABLED=false` + restart. SQLite file stays on disk; nothing is lost. Audit-log JSONL entries emitted during the enabled period (`oauth.upsert`, `mcp.create`, `mcp.revoke`, `oauth.delete`) persist under `NUXT_AUDIT_DIR` after rollback — by design (the credential-mutation timeline is the whole point of the audit log). A SOC analyst inspecting the log post-rollback will see events that no longer correspond to live DB rows; this is intentional, not corruption.
 
@@ -361,11 +379,16 @@ OAuth failure modes are operator-debuggable only if every reject/throw lands a *
   - `oauth.callback.deny.state-cookie-mismatch` (WARN)
   - `oauth.callback.state-row-corrupt` (ERROR — persisted state row had an empty csrf binding, a corrupt-DB guard → 500, not 400)
   - `oauth.callback.deny.rate-limited` (WARN, issue #221 round-3 — emitted by the same `server/middleware/oauth-rate-limit.ts` when one source IP exceeds **30** callback requests per minute; same posture as the install gate (flag-gated, raw socket IP, per-route bucket). The looser cap accommodates operator retries and browser-back without false 429s while still capping a junk-`state` flood. Surfaces the same shared errorCode `RATE-LIMITED` + `Retry-After`)
+  - `oauth.register.deny.rate-limited` / `oauth.authorize.deny.rate-limited` (WARN — OAuth DCR registration and authorization-start limits are **20 requests/minute/IP per route**; same `RATE-LIMITED` + `Retry-After` contract)
   - `oauth.callback.domain-absent` (WARN — Bitrix24 omitted `?domain=`; the portal↔callback binding can't be checked, the other three §8 bindings still hold)
   - `oauth.callback.deny.state-portal-mismatch` (WARN)
   - `oauth.callback.deny.state-client-mismatch` (WARN)
-  - `oauth.callback.exchange.fail` (ERROR — `reason` is one of `network` / `non-json` / `bitrix24-error` / `bad-user-id` / `bad-member-id` / `domain-mismatch`; logs `httpStatus` + the Bitrix24 error code, NEVER the raw URL or body. `domain-mismatch` (issue #220): the exchange response `domain` failed the allow-list or disagreed with the validated `stateRow.portal` — refused before any DB write, `expected`/`got` logged truncated)
-  - `oauth.callback.exchange.ok` (INFO — tokens persisted, Bearer minted; logs `bearerHashPrefix`, never the raw Bearer)
+  - `oauth.callback.exchange.fail` (ERROR — `reason` is one of `network` / `non-json` / `bitrix24-error` / `bad-user-id` / `bad-member-id` / `domain-mismatch`; logs `httpStatus` + the Bitrix24 error code, NEVER the raw URL or body. `domain-mismatch` (issue #220): a non-central exchange `domain` failed the allow-list or disagreed with the validated `stateRow.portal` — refused before any DB write, `expected`/`got` logged truncated. The known central OAuth hosts are accepted as metadata and are never stored as the tenant portal.)
+  - `oauth.callback.exchange.ok` (INFO — Bitrix tokens persisted; manual installs mint a Bearer, Claude flows mint a short-lived authorization code and redirect to the registered client. Never log either raw credential)
+
+  Claude authorization server (`/api/oauth/register`, `/api/oauth/authorize`, `/api/oauth/token`):
+  - `oauth.register.deny.rate-limited` / `oauth.authorize.deny.rate-limited` (WARN — 20 requests/minute/IP per route; 429 + `Retry-After` + `RATE-LIMITED`)
+  - DCR accepts only public authorization-code clients with the exact hosted Claude redirect URI. Authorization requests require an exact MCP resource, S256 PKCE, and a CSRF-bound portal choice. Token exchange and refresh return protocol error bodies and do not log token values.
 
   Refresh (`useBitrix24OAuth` factory):
   - `oauth.refresh.start` (INFO) / `oauth.refresh.ok` (INFO) / `oauth.refresh.fail.invalid-grant` (ERROR) / `oauth.refresh.fail.transient` (ERROR) / `oauth.refresh.fail.tenant-deleted` (ERROR) (the `transient` bucket is network errors / 5xx / non-JSON / `domain-mismatch`; `invalid-grant` triggers `markRefreshFailed`. `domain-mismatch` (issue #220): the refresh response `domain` failed the allow-list or disagreed with the stored `portalDomain` — refused before any DB write, Bearers stay active so the user retries. `tenant-deleted` (issue #223): a concurrent `deleteTenant()` (operator uninstall) removed the `oauth_tokens` row between the SDK's expiry check and the refresh read — a benign uninstall race, NOT a revoked credential. It does **not** call `markRefreshFailed` (the CASCADE already dropped this tenant's Bearers), does **not** bump the `lastRefreshFail` health field (that signal is reserved for genuine credential-refresh failures — see `_health`), and carries its OWN event so an alert on `invalid-grant` isn't tripped by an uninstall. Distinct from `invalid-grant`, which means the refresh token itself was rejected by Bitrix24)
@@ -383,9 +406,9 @@ OAuth failure modes are operator-debuggable only if every reject/throw lands a *
 
   MCP auth middleware (`server/mcp/index.ts` — `defineMcpHandler({ middleware })`):
   - `mcp.auth.ok` (INFO — happy path, logs `memberId`, `userId`, `requestId`, `bearerHashPrefix`)
-  - `mcp.auth.deny.bearer-unknown` (WARN — no `Authorization: Bearer`, or no matching `mcp_tokens` row)
-  - `mcp.auth.deny.bearer-revoked` (WARN — `mcp_tokens` row exists with `revoked_at` set)
-  - `mcp.auth.deny.bearer-orphan` (ERROR — `mcp_tokens` row active but `oauth_tokens` parent deleted; impossible under the CASCADE, but log defensively in case of a manual SQLite edit)
+  - `mcp.auth.deny.bearer-unknown` (WARN — no `Authorization: Bearer`, no matching manual/OAuth token row, or OAuth token audience mismatch)
+  - `mcp.auth.deny.bearer-revoked` (WARN — token row revoked or OAuth access token expired)
+  - `mcp.auth.deny.bearer-orphan` (ERROR — token row active but its `oauth_tokens` tenant was deleted; impossible under the CASCADE, but log defensively in case of a manual SQLite edit)
 - Each `*.deny.*` and `*.fail.*` path carries an `errorCode` ≤ 32 chars, uppercased. For the `*.deny.*` events the code IS the suffix after the last dot (`oauth.callback.deny.state-cookie-mismatch` → `STATE-COOKIE-MISMATCH`, `…state-expired` → `STATE-EXPIRED`, `mcp.auth.deny.bearer-revoked` → `BEARER-REVOKED`). The `oauth.callback.exchange.fail` event is the exception: a single event name covers several distinct failure causes, so it carries a **compound** code naming the cause rather than the event suffix — one of `EXCHANGE-NETWORK`, `EXCHANGE-NON-JSON`, `EXCHANGE-FAIL`, `EXCHANGE-BAD-USER-ID`, `EXCHANGE-BAD-MEMBER-ID`, `EXCHANGE-DOMAIN-MISMATCH` (the `reason` field in the log line mirrors the code; `EXCHANGE-DOMAIN-MISMATCH` is the issue #220 defence — Bitrix24 returned a `domain` that failed the allow-list or didn't match the authorised portal). The same code is surfaced to the user in the rendered HTML on `/callback` failure and in the WWW-Authenticate header on the MCP 401 (via the middleware in `server/mcp/index.ts`), so the operator can grep logs for the exact string the user pasted into Slack. One more code follows the suffix rule but is worth calling out because it is the only **429** in the taxonomy (every other code is a 401/400/502/503) and the only one emitted from an h3 middleware rather than a route handler: `RATE-LIMITED`. It is SHARED by two distinct events — `oauth.install.deny.rate-limited` (10/min/IP) and `oauth.callback.deny.rate-limited` (30/min/IP) — both detailed in the per-event bullets above. The response carries a `Retry-After` header on both surfaces.
 
   Example `WWW-Authenticate` header on a 401 (RFC 6750 §3 + the §11 `errorCode` extension):

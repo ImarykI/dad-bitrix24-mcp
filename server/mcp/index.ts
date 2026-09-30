@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { createError, getHeader, setResponseHeader } from 'h3'
 import { defineMcpHandler } from '@nuxtjs/mcp-toolkit/server'
 import { useLogger } from '~/server/utils/logger'
+import { getMcpOAuthIssuer, mcpOAuthChallengeParameters } from '~/server/utils/mcp-oauth-metadata'
 import { runWithTenant } from '~/server/utils/request-context'
 import { useTokenStore } from '~/server/utils/token-store'
 
@@ -78,14 +79,15 @@ function denyBearer(opts: DenyOptions): never {
  * threads a Bitrix24-controlled value into `description` shouldn't be
  * able to inject extra header attributes.
  */
-function wwwAuthHeader(code: string, description: string): string {
+function wwwAuthHeader(code: string, description: string, config: ReturnType<typeof useRuntimeConfig>): string {
   const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-  return `Bearer error="invalid_token", errorCode="${esc(code)}", error_description="${esc(description)}"`
+  return `Bearer error="invalid_token", errorCode="${esc(code)}", error_description="${esc(description)}", ${mcpOAuthChallengeParameters(config)}`
 }
 
 export default defineMcpHandler({
   middleware: async (event, next) => {
-    const { bitrix24OauthEnabled } = useRuntimeConfig()
+    const config = useRuntimeConfig()
+    const { bitrix24OauthEnabled } = config
     if (!bitrix24OauthEnabled) return next()
 
     const logger = useLogger()
@@ -101,18 +103,62 @@ export default defineMcpHandler({
       // denyBearer(...)` narrows `token` to `string` below without a
       // non-null assertion (denyBearer's return type is `never`).
       void logger.warning('mcp.auth.deny.bearer-unknown', { reason: 'no-bearer' })
-      setResponseHeader(event, 'www-authenticate', wwwAuthHeader('BEARER-UNKNOWN', 'Bearer required'))
+      setResponseHeader(event, 'www-authenticate', wwwAuthHeader('BEARER-UNKNOWN', 'Bearer required', config))
       return denyBearer({ errorCode: 'BEARER-UNKNOWN', statusMessage: 'Bearer required' })
     }
 
     const bearerHash = `sha256-${createHash('sha256').update(token).digest('hex')}`
     const bearerHashPrefix = bearerHash.slice(0, 15) // 'sha256-' + 8 hex
     const store = useTokenStore()
+    const oauthInspection = store.inspectMcpOAuthAccessToken(bearerHash)
+    if (oauthInspection) {
+      const expectedResource = `${getMcpOAuthIssuer(config)}/mcp`
+      const now = Math.floor(Date.now() / 1000)
+      if (oauthInspection.resource !== expectedResource) {
+        void logger.warning('mcp.auth.deny.bearer-unknown', { bearerHashPrefix, reason: 'invalid-audience' })
+        setResponseHeader(event, 'www-authenticate', wwwAuthHeader('BEARER-UNKNOWN', 'Bearer not recognised', config))
+        return denyBearer({ errorCode: 'BEARER-UNKNOWN', statusMessage: 'Bearer not recognised' })
+      }
+      if (oauthInspection.revokedAt !== null || oauthInspection.expiresAt <= now) {
+        void logger.warning('mcp.auth.deny.bearer-revoked', {
+          bearerHashPrefix,
+          memberId: oauthInspection.memberId,
+          userId: oauthInspection.userId,
+          revokedAt: oauthInspection.revokedAt,
+        })
+        setResponseHeader(event, 'www-authenticate', wwwAuthHeader('BEARER-REVOKED', 'Bearer expired or revoked', config))
+        return denyBearer({ errorCode: 'BEARER-REVOKED', statusMessage: 'Bearer expired or revoked - reconnect Claude' })
+      }
+      const tenantStillExists = store.getTokens(oauthInspection.memberId, oauthInspection.userId) !== undefined
+      if (!tenantStillExists) {
+        void logger.error('mcp.auth.deny.bearer-orphan', {
+          bearerHashPrefix,
+          memberId: oauthInspection.memberId,
+          userId: oauthInspection.userId,
+        })
+        setResponseHeader(event, 'www-authenticate', wwwAuthHeader('BEARER-ORPHAN', 'Bearer orphan - tenant missing', config))
+        return denyBearer({ errorCode: 'BEARER-ORPHAN', statusMessage: 'Bearer orphan - tenant missing' })
+      }
+
+      const requestId = randomBytes(16).toString('hex')
+      void logger.info('mcp.auth.ok', {
+        memberId: oauthInspection.memberId,
+        userId: oauthInspection.userId,
+        bearerHashPrefix,
+        clientId: oauthInspection.clientId,
+        requestId,
+      })
+      return runWithTenant(
+        { memberId: oauthInspection.memberId, userId: String(oauthInspection.userId), requestId },
+        () => next(),
+      )
+    }
+
     const inspection = store.inspectBearer(bearerHash)
 
     if (!inspection) {
       void logger.warning('mcp.auth.deny.bearer-unknown', { bearerHashPrefix })
-      setResponseHeader(event, 'www-authenticate', wwwAuthHeader('BEARER-UNKNOWN', 'Bearer not recognised'))
+      setResponseHeader(event, 'www-authenticate', wwwAuthHeader('BEARER-UNKNOWN', 'Bearer not recognised', config))
       return denyBearer({ errorCode: 'BEARER-UNKNOWN', statusMessage: 'Bearer not recognised' })
     }
 
@@ -123,7 +169,7 @@ export default defineMcpHandler({
         userId: inspection.userId,
         revokedAt: inspection.revokedAt,
       })
-      setResponseHeader(event, 'www-authenticate', wwwAuthHeader('BEARER-REVOKED', 'Bearer revoked'))
+      setResponseHeader(event, 'www-authenticate', wwwAuthHeader('BEARER-REVOKED', 'Bearer revoked', config))
       return denyBearer({ errorCode: 'BEARER-REVOKED', statusMessage: 'Bearer revoked - re-authorise at /api/oauth/install' })
     }
 
@@ -138,7 +184,7 @@ export default defineMcpHandler({
         memberId: inspection.memberId,
         userId: inspection.userId,
       })
-      setResponseHeader(event, 'www-authenticate', wwwAuthHeader('BEARER-ORPHAN', 'Bearer orphan - re-authorise at /api/oauth/install'))
+      setResponseHeader(event, 'www-authenticate', wwwAuthHeader('BEARER-ORPHAN', 'Bearer orphan - re-authorise at /api/oauth/install', config))
       return denyBearer({ errorCode: 'BEARER-ORPHAN', statusMessage: 'Bearer orphan - tenant missing' })
     }
 

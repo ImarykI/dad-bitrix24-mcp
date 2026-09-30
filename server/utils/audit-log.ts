@@ -96,6 +96,7 @@ export type AuditEventKind =
   | 'oauth.delete' // OAuth row removed on uninstall / hard revoke
   | 'mcp.create' //   Bearer minted on install
   | 'mcp.revoke' //   Bearer revoked on uninstall / user logout / rotation
+  | 'mcp.client.register' // Public OAuth client registered through DCR
 
 /**
  * Initiator of the mutation — answers "who did it". Kept distinct from

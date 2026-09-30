@@ -29,6 +29,7 @@ import { createTokenStore, type TokenStore } from '~/server/utils/token-store'
 
 const runtimeConfig: Record<string, unknown> = {
   bitrix24OauthEnabled: true,
+  bitrix24OauthRedirectUrl: 'https://mcp.example.com/api/oauth/callback',
 }
 vi.stubGlobal('useRuntimeConfig', () => runtimeConfig)
 
@@ -239,6 +240,53 @@ describe('MCP Bearer middleware — deny branches (§11 taxonomy)', () => {
 })
 
 describe('MCP Bearer middleware — happy path', () => {
+  it('accepts a non-expired Claude OAuth token only for its bound resource', async () => {
+    await store.upsertTokens(SAMPLE_TENANT, 'install')
+    const clientId = 'claude-client'
+    await store.registerMcpOAuthClient({
+      clientId,
+      clientName: 'Claude',
+      redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+    })
+    const now = Math.floor(Date.now() / 1000)
+    const valid = await store.createMcpOAuthAccessToken({
+      clientId,
+      resource: 'https://mcp.example.com/mcp',
+      scope: 'mcp:access offline_access',
+      memberId: SAMPLE_TENANT.memberId,
+      userId: SAMPLE_TENANT.userId,
+      expiresAt: now + 3600,
+    }, 'install')
+    const wrongAudience = await store.createMcpOAuthAccessToken({
+      clientId,
+      resource: 'https://other.example.com/mcp',
+      scope: 'mcp:access',
+      memberId: SAMPLE_TENANT.memberId,
+      userId: SAMPLE_TENANT.userId,
+      expiresAt: now + 3600,
+    }, 'install')
+    const expired = await store.createMcpOAuthAccessToken({
+      clientId,
+      resource: 'https://mcp.example.com/mcp',
+      scope: 'mcp:access',
+      memberId: SAMPLE_TENANT.memberId,
+      userId: SAMPLE_TENANT.userId,
+      expiresAt: now - 1,
+    }, 'install')
+
+    const middleware = await loadMiddleware()
+    const { getTenantContext } = await import('~/server/utils/request-context')
+    const accepted = await middleware(makeEvent({ authorization: `Bearer ${valid.bearer}` }), async () =>
+      getTenantContext()?.memberId,
+    )
+    expect(accepted).toBe(SAMPLE_TENANT.memberId)
+
+    await expect(middleware(makeEvent({ authorization: `Bearer ${wrongAudience.bearer}` }), async () => 'unexpected'))
+      .rejects.toMatchObject({ statusCode: 401, data: { errorCode: 'BEARER-UNKNOWN' } })
+    await expect(middleware(makeEvent({ authorization: `Bearer ${expired.bearer}` }), async () => 'unexpected'))
+      .rejects.toMatchObject({ statusCode: 401, data: { errorCode: 'BEARER-REVOKED' } })
+  })
+
   it('wraps next() in runWithTenant({memberId, userId, requestId}); requestId is 32-char hex', async () => {
     await store.upsertTokens(SAMPLE_TENANT, 'install')
     const { bearer } = await store.createMcpToken(SAMPLE_TENANT.memberId, SAMPLE_TENANT.userId, 'laptop', 'install')

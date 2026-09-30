@@ -27,6 +27,7 @@ import { createApp, eventHandler, toNodeListener } from 'h3'
 import type * as AuditLogModule from '~/server/utils/audit-log'
 import type * as TokenStoreModule from '~/server/utils/token-store'
 import { createTokenStore, type TokenStore } from '~/server/utils/token-store'
+import { CLAUDE_HOSTED_REDIRECT_URI, mcpOAuthCsrfCookieName } from '~/server/utils/mcp-oauth-client'
 
 // Mock the audit log to a no-op — `upsertTokens` and `createMcpToken`
 // trigger `recordAuditEvent` (audit-first invariant from PR-2b). The
@@ -116,6 +117,7 @@ async function callCallback(opts: {
   state?: string
   domain?: string
   cookie?: string
+  cookieName?: string
 } = {}): Promise<CapturedResponse> {
   const handler = (await import('~/server/api/oauth/callback.get')).default
   const app = createApp({
@@ -139,7 +141,7 @@ async function callCallback(opts: {
   req.url = `/api/oauth/callback${queryParts.length ? '?' + queryParts.join('&') : ''}`
   req.headers = {
     host: 'mcp.example.com',
-    ...(opts.cookie ? { cookie: `bx24_oauth_csrf=${opts.cookie}` } : {}),
+    ...(opts.cookie ? { cookie: `${opts.cookieName ?? 'bx24_oauth_csrf'}=${opts.cookie}` } : {}),
   }
 
   return await new Promise<CapturedResponse>((resolve) => {
@@ -411,9 +413,77 @@ describe('/api/oauth/callback — domain validation (#220)', () => {
     expect(res.statusCode).toBe(200)
     expect(store.getTokens('portal-acme', 1)?.portalDomain).toBe('acme.bitrix24.com')
   })
+
+  it('200 when ok.domain identifies the central OAuth host; persists the validated state portal', async () => {
+    seedState({ portal: 'dad.bitrix24.ru' })
+    fetchMock.mockResolvedValue(fakeJsonResponse(200, {
+      access_token: 'a', refresh_token: 'r', expires_in: 3600,
+      member_id: 'portal-dad', user_id: 1, scope: 'user',
+      domain: 'oauth.bitrix24.tech',
+    }))
+    const res = await callCallback({
+      code: 'c', state: '0'.repeat(64), cookie: '1'.repeat(64),
+      domain: 'dad.bitrix24.ru',
+    })
+    expect(res.statusCode).toBe(200)
+    expect(store.getTokens('portal-dad', 1)?.portalDomain).toBe('dad.bitrix24.ru')
+  })
 })
 
 describe('/api/oauth/callback — happy path', () => {
+  it('redirects Claude OAuth flows with a one-time PKCE-bound code instead of a manual Bearer', async () => {
+    const b24State = '3'.repeat(64)
+    const flowId = 'f'.repeat(64)
+    const csrfCookie = '2'.repeat(64)
+    seedState({ state: b24State, portal: 'dad.bitrix24.ru', csrfCookie })
+    await store.registerMcpOAuthClient({
+      clientId: 'claude-client',
+      clientName: 'Claude',
+      redirectUris: [CLAUDE_HOSTED_REDIRECT_URI],
+    })
+    store.createMcpOAuthRequest({
+      flowId,
+      clientId: 'claude-client',
+      redirectUri: CLAUDE_HOSTED_REDIRECT_URI,
+      clientState: 'claude-original-state',
+      codeChallenge: 'A'.repeat(43),
+      resource: 'https://mcp.example.com/mcp',
+      scope: 'mcp:access offline_access',
+      csrfCookie,
+      expiresAt: Math.floor(Date.now() / 1000) + 300,
+    })
+    expect(store.bindMcpOAuthRequest(flowId, csrfCookie, 'dad.bitrix24.ru', b24State)).toBe(true)
+    fetchMock.mockResolvedValue(fakeJsonResponse(200, {
+      access_token: 'access-token-value', refresh_token: 'refresh-token-value', expires_in: 3600,
+      member_id: 'portal-dad', user_id: 42, scope: 'user,task', domain: 'oauth.bitrix24.tech',
+    }))
+
+    const res = await callCallback({
+      code: 'authcode',
+      state: b24State,
+      cookie: csrfCookie,
+      cookieName: mcpOAuthCsrfCookieName(flowId),
+      domain: 'dad.bitrix24.ru',
+    })
+
+    expect(res.statusCode).toBe(302)
+    const redirect = new URL(String(res.headers.location))
+    expect(redirect.origin + redirect.pathname).toBe(CLAUDE_HOSTED_REDIRECT_URI)
+    expect(redirect.searchParams.get('state')).toBe('claude-original-state')
+    expect(redirect.searchParams.get('iss')).toBe('https://mcp.example.com')
+    const authorizationCode = redirect.searchParams.get('code')!
+    expect(store.consumeMcpOAuthCode(authorizationCode)).toMatchObject({
+      clientId: 'claude-client',
+      redirectUri: CLAUDE_HOSTED_REDIRECT_URI,
+      codeChallenge: 'A'.repeat(43),
+      resource: 'https://mcp.example.com/mcp',
+      memberId: 'portal-dad',
+      userId: 42,
+    })
+    expect(db.prepare('SELECT COUNT(*) AS count FROM mcp_tokens').get()).toMatchObject({ count: 0 })
+    expect(store.getTokens('portal-dad', 42)?.portalDomain).toBe('dad.bitrix24.ru')
+  })
+
   it('200 with Bearer in HTML, oauth_tokens + mcp_tokens persisted, CSRF cookie cleared', async () => {
     seedState({ portal: 'acme.bitrix24.com' })
     fetchMock.mockResolvedValue(fakeJsonResponse(200, {

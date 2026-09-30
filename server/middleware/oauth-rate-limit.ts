@@ -3,7 +3,7 @@ import { useLogger } from '~/server/utils/logger'
 
 /**
  * Per-IP sliding-window rate limit on the unauthenticated OAuth HTTP
- * surface (issue #221): `/api/oauth/install` and `/api/oauth/callback`.
+ * surface (issue #221): install, callback, authorization, and registration.
  *
  * Why these endpoints specifically:
  *   - **install**: unauthenticated and, with the OAuth flag on, every
@@ -94,6 +94,16 @@ const ROUTE_LIMITS: Record<string, RouteLimit> = {
     maxPerWindow: 30,
     eventName: 'oauth.callback.deny.rate-limited',
     errorMessage: 'Too many callback attempts - retry later',
+  },
+  '/api/oauth/register': {
+    maxPerWindow: 20,
+    eventName: 'oauth.register.deny.rate-limited',
+    errorMessage: 'Too many client registrations - retry later',
+  },
+  '/api/oauth/authorize': {
+    maxPerWindow: 20,
+    eventName: 'oauth.authorize.deny.rate-limited',
+    errorMessage: 'Too many authorization attempts - retry later',
   },
 }
 

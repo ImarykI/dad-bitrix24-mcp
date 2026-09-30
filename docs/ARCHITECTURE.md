@@ -29,13 +29,14 @@ Same handler code, same OAuth-aware client dispatcher, same logger redaction. On
 |---|---|---|
 | Transport | `@modelcontextprotocol/sdk` (HTTP) / `mcp-stdio/server.ts` (stdio) | toolkit mounts `/mcp`; stdio is bundled separately |
 | Auth (h3) | `server/middleware/mcp-auth.ts` | flag-off: Bearer + `timingSafeEqual` against `NUXT_MCP_AUTH_TOKEN` (503 if unset, 401 on mismatch). Flag-on: defence-in-depth Bearer-prefix check, then yields to the toolkit middleware. |
-| Auth (toolkit) | `server/mcp/index.ts` | flag-on Bearer → sha256 → `inspectBearer` → `runWithTenant(...)` so per-request tenant context propagates to every tool. Three §11 deny buckets each carry their own `WWW-Authenticate errorCode`. |
+| OAuth authorization server | `server/api/oauth/{register,authorize,token,callback}.ts` + `server/routes/.well-known/**` | Claude DCR + authorization-code/S256 PKCE, Bitrix24 user consent, MCP-audience access tokens, rotating refresh tokens, and RFC 9728/8414 discovery. `/api/oauth/install` remains the manual-Bearer fallback. |
+| Auth (toolkit) | `server/mcp/index.ts` | flag-on Bearer → sha256 → OAuth access-token validation or legacy `inspectBearer` → `runWithTenant(...)` so per-request tenant context propagates to every tool. 401 challenges advertise protected-resource metadata. |
 | Tool registry | Nuxt file-glob (HTTP) / `mcp-stdio/tools.ts` (stdio) | parity is CI-enforced (`tools.parity.test.ts`) — see hot spots |
 | Tool handlers | `server/mcp/tools/{tasks,users,meta}/*.ts` | `defineMcpTool` is a no-op passthrough |
 | Tenant dispatcher | `server/utils/bitrix24-tenant.ts` | the `useBitrix24Tenant()` every tool calls. Flag-off → returns the webhook singleton; flag-on → resolves the per-tenant `B24OAuth` from ALS. Tool code never knows which it got. |
 | Bitrix24 client (webhook) | `server/utils/bitrix24.ts` | process-singleton `B24Hook`, logger wrapped in `makeRedactingLogger` |
 | Bitrix24 client (OAuth) | `server/utils/bitrix24-oauth.ts` | per-tenant `B24OAuth` LRU-cached at 100, custom refresh callback persists via `useTokenStore`, redacting logger attached on construction (defence-in-depth on the SDK's log surface) |
-| OAuth token store | `server/utils/token-store.ts` (+ `server/plugins/oauth-schema.ts`) | SQLite, sha256-hashed Bearers, audit-first invariant on every mutation, schema-bootstrap plugin runs at boot |
+| OAuth token store | `server/utils/token-store.ts` (+ `server/plugins/oauth-schema.ts`) | SQLite, tenant-scoped Bitrix tokens, hashed manual Bearers/authorization codes/access and rotating refresh tokens, audit-first mutations, schema bootstrap at boot |
 | REST dispatch | `server/utils/sdk-helpers.ts` | `callV2/callV3/batchV2/batchV3` — only correct path. Direct `actions.*` forbidden. |
 | Action factories | `define-action-tool.ts`, `task-lifecycle.ts`, `checklist.ts` | own single-vs-batch dispatch contract |
 

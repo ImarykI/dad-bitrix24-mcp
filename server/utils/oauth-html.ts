@@ -9,9 +9,8 @@ import type { H3Event } from 'h3'
  *
  * History: this lived as a per-file copy in both handlers from the
  * #221 hardening through the #232 operator-UX PR. The CSP started
- * drifting (install added `form-action 'self'` for the landing form,
- * callback didn't need it) so we lifted it here — one home for the
- * posture, per-route opt-in for any extras.
+ * drifting between the routes, so we lifted it here — one home for the
+ * posture, with per-route nonce opt-in.
  *
  * What's pinned (called by both routes, on EVERY response path —
  * success page, HTML error pages, AND the JSON `throw createError`
@@ -31,21 +30,8 @@ import type { H3Event } from 'h3'
  *   JS, no external assets, no inline styles. Maximally strict CSP
  *   with no `'unsafe-inline'` carve-out.
  *
- * The optional `formAction` lets a caller opt into a specific
- * `form-action` directive — install passes `/api/oauth/install` so
- * the landing form's GET submission is allowed without granting
- * `'self'`-wide form-action (no other endpoint on the same origin
- * can be the target of a form post under the resulting policy).
- * Callback omits it (no `<form>` on the success or error pages).
  */
 export interface AntiFramingOpts {
-  /**
-   * Restrict the page's `<form>` submission target. Install passes
-   * `/api/oauth/install` so the landing form's GET round-trip is
-   * allowed without granting `'self'`-wide form-action. Callback omits
-   * it (no `<form>` on the success or error pages).
-   */
-  formAction?: string
   /**
    * When provided, add `style-src 'nonce-<value>'` to the CSP so the
    * page can ship one `<style nonce="<value>">…</style>` block under
@@ -69,7 +55,6 @@ export function setAntiFramingHeaders(event: H3Event, opts: AntiFramingOpts = {}
   // easier to assert on).
   const directives = ['default-src \'none\'', 'frame-ancestors \'none\'']
   if (opts.cspNonce) directives.push(`style-src 'nonce-${opts.cspNonce}'`)
-  if (opts.formAction) directives.push(`form-action ${opts.formAction}`)
   setResponseHeader(event, 'content-security-policy', directives.join('; '))
 }
 

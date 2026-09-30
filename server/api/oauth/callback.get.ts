@@ -1,8 +1,11 @@
-import { createError, defineEventHandler, deleteCookie, getCookie, getQuery, getRequestURL, setResponseStatus } from 'h3'
+import { randomBytes } from 'node:crypto'
+import { createError, defineEventHandler, deleteCookie, getCookie, getQuery, getRequestURL, sendRedirect, setResponseStatus } from 'h3'
 import { timingSafeEqualStr } from '~/server/utils/auth-helpers'
 import { useLogger } from '~/server/utils/logger'
 import { generateCspNonce, htmlEscape, renderBrandStylesTag, renderHostnameDisclosure, setAntiFramingHeaders, setHtmlResponseHeaders } from '~/server/utils/oauth-html'
-import { isAllowedPortalDomain } from '~/server/utils/portal-validation'
+import { isAllowedCentralOauthHost, isAllowedPortalDomain } from '~/server/utils/portal-validation'
+import { getMcpOAuthIssuer } from '~/server/utils/mcp-oauth-metadata'
+import { mcpOAuthCsrfCookieName } from '~/server/utils/mcp-oauth-client'
 import { useTokenStore } from '~/server/utils/token-store'
 
 /** Bitrix24 `member_id` is an opaque alnum token; reject anything that
@@ -214,6 +217,16 @@ export default defineEventHandler(async (event) => {
     })
   }
 
+  const mcpOAuthRequest = store.consumeMcpOAuthRequest(state)
+  if (mcpOAuthRequest && (
+    mcpOAuthRequest.b24State !== state
+    || mcpOAuthRequest.portal !== stateRow.portal
+    || mcpOAuthRequest.expiresAt < Math.floor(Date.now() / 1000)
+  )) {
+    void logger.warning('oauth.callback.deny.mcp-request-mismatch', { statePrefix: state.slice(0, 8) })
+    throw createError({ statusCode: 400, statusMessage: 'OAuth request binding failed', data: { errorCode: 'STATE-MISMATCH' } })
+  }
+
   // Strict `<`: a state whose `expiresAt` equals the current second is
   // still accepted (the boundary second is "valid"). `_health`'s
   // `pendingStates` count uses `expires_at > now`, so a row on the exact
@@ -229,7 +242,8 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const cookieValue = getCookie(event, 'bx24_oauth_csrf') ?? ''
+  const csrfCookieName = mcpOAuthRequest ? mcpOAuthCsrfCookieName(mcpOAuthRequest.flowId) : 'bx24_oauth_csrf'
+  const cookieValue = getCookie(event, csrfCookieName) ?? ''
   // Defend against a corrupt-DB row with an empty csrf_cookie: install
   // always writes a 64-hex nonce, but the type doesn't guarantee it.
   // Without this guard, `timingSafeEqualStr('', '')` would return true and
@@ -369,15 +383,12 @@ export default defineEventHandler(async (event) => {
     return callbackErrorPage('EXCHANGE-BAD-MEMBER-ID', 'Bitrix24 returned an unexpected member_id.', pageOpts)
   }
 
-  // Defence-in-depth (issue #220): the token-exchange response carries a
-  // `domain` field that we previously persisted verbatim. If it disagrees
-  // with the `?portal=` the operator authorised — or fails the allow-list —
-  // refuse. The validated `stateRow.portal` is the source of truth: it was
-  // checked against `PORTAL_ALLOW_LIST_RE` at /install AND bound to the
-  // CSRF state row. A divergent `ok.domain` would only happen via a
-  // Bitrix24-side bug or an upstream compromise of `oauth.bitrix24.tech`,
-  // both of which we refuse loudly rather than silently accept.
-  if (ok.domain != null && (!isAllowedPortalDomain(ok.domain) || ok.domain !== stateRow.portal)) {
+  // The exchange's `domain` can identify the central OAuth service rather
+  // than the tenant portal. Accept only known central OAuth hosts there;
+  // any other value must match the CSRF-bound, validated install portal.
+  const exchangeDomain = typeof ok.domain === 'string' ? ok.domain.toLowerCase() : undefined
+  const centralOauthDomain = exchangeDomain !== undefined && isAllowedCentralOauthHost(exchangeDomain)
+  if (ok.domain != null && (!exchangeDomain || (!centralOauthDomain && (!isAllowedPortalDomain(exchangeDomain) || exchangeDomain !== stateRow.portal)))) {
     void logger.error('oauth.callback.exchange.fail', {
       reason: 'domain-mismatch',
       httpStatus: exchangeRes.status,
@@ -395,12 +406,48 @@ export default defineEventHandler(async (event) => {
   await store.upsertTokens({
     memberId: ok.member_id,
     userId: userIdNum,
-    portalDomain: ok.domain ?? stateRow.portal,
+    portalDomain: stateRow.portal,
     accessToken: ok.access_token,
     refreshToken: ok.refresh_token,
     accessExpiresAt,
     scope: ok.scope ?? '',
   }, 'install')
+
+  if (mcpOAuthRequest) {
+    const client = store.getMcpOAuthClient(mcpOAuthRequest.clientId)
+    if (!client || !client.redirectUris.includes(mcpOAuthRequest.redirectUri)) {
+      void logger.error('oauth.callback.exchange.fail', { reason: 'mcp-client-missing', statePrefix: state.slice(0, 8) })
+      setHtmlResponseHeaders(event, headerOpts)
+      setResponseStatus(event, 502)
+      return callbackErrorPage('EXCHANGE-CLIENT-INVALID', 'The registered Claude client is no longer available.', pageOpts)
+    }
+
+    const authorizationCode = randomBytes(32).toString('base64url')
+    await store.createMcpOAuthCode(authorizationCode, {
+      clientId: mcpOAuthRequest.clientId,
+      redirectUri: mcpOAuthRequest.redirectUri,
+      codeChallenge: mcpOAuthRequest.codeChallenge,
+      resource: mcpOAuthRequest.resource,
+      scope: mcpOAuthRequest.scope,
+      memberId: ok.member_id,
+      userId: userIdNum,
+      expiresAt: Math.floor(Date.now() / 1000) + 60,
+    })
+
+    const issuer = getMcpOAuthIssuer({ bitrix24OauthEnabled, bitrix24OauthRedirectUrl: String(bitrix24OauthRedirectUrl ?? '') })
+    const clientRedirect = new URL(mcpOAuthRequest.redirectUri)
+    clientRedirect.searchParams.set('code', authorizationCode)
+    clientRedirect.searchParams.set('state', mcpOAuthRequest.clientState)
+    clientRedirect.searchParams.set('iss', issuer)
+    deleteCookie(event, csrfCookieName, { path: '/api/oauth/' })
+    void logger.info('oauth.callback.exchange.ok', {
+      memberId: ok.member_id,
+      userId: userIdNum,
+      portal: stateRow.portal,
+      flow: 'mcp-oauth',
+    })
+    return sendRedirect(event, clientRedirect.toString(), 302)
+  }
 
   const minted = await store.createMcpToken(ok.member_id, userIdNum, stateRow.portal, 'install')
 

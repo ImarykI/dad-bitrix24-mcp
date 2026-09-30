@@ -66,15 +66,14 @@ function newNonce(): string {
 
 /**
  * Path the landing form's GET submission is allowed to target under the
- * CSP `form-action` directive. Sized down from `'self'` (#232 review):
- * any other endpoint on the same origin can't be the target of a form
- * post under the resulting policy — minimal-privilege principle.
+ * CSP `form-action` directive. HTML pattern attributes use the newer
+ * `v` regex mode, where a literal hyphen in a character class must be
+ * escaped. Keep the server-side validator unchanged and escape it only
+ * in this client-side hint.
  *
  * CSP Level 2 supports path-level form-action; all browsers MCP cares
  * about (Chrome ≥40, Firefox ≥31, Safari ≥10) implement it.
  */
-const INSTALL_PATH = '/api/oauth/install'
-
 /**
  * `true` when the caller's `Accept` header includes `text/html` — a
  * browser navigation. Default-fail to JSON: a missing Accept (curl,
@@ -131,7 +130,10 @@ function installLandingPage(clientId: string, scope: string, opts: LandingOpts):
   // `safePattern` is interpolated into a DOUBLE-quoted attribute and
   // routed through `htmlEscape` (which now covers `'` too) — safe even
   // if the regex source ever grows a quote character.
-  const portalPattern = PORTAL_ALLOW_LIST_RE.source.replace(/^\^/, '').replace(/\$$/, '')
+  const portalPattern = PORTAL_ALLOW_LIST_RE.source
+    .replace(/^\^/, '')
+    .replace(/\$$/, '')
+    .replace('[a-z0-9-]', '[a-z0-9\\-]')
   const safePattern = htmlEscape(portalPattern)
   const safeClientId = htmlEscape(clientId)
   const scopeItems = scope.split(',')
@@ -218,15 +220,13 @@ export default defineEventHandler(async (event) => {
   const cspNonce = bitrix24OauthBrandStyles ? generateCspNonce() : undefined
   const host = getRequestURL(event).host
   const displayName = String(bitrix24OauthAppDisplayName ?? '')
-  const headerOpts = { formAction: INSTALL_PATH, cspNonce }
+  const headerOpts = { cspNonce }
   const pageOpts = { cspNonce, host }
   // Pin anti-framing + no-cache on EVERY path: 302 success, the landing
   // form, HTML deny pages, and the JSON `throw createError` throws. h3
   // preserves headers across throws, so the JSON deny responses carry
   // X-Frame-Options + the strict CSP too (uniform contract). The
-  // `form-action` directive is pinned to the install path itself —
-  // even on JSON deny paths it's harmless (no <form> in JSON bodies)
-  // and tightens the uniform CSP without per-branch divergence.
+  // Keep anti-framing and CSP headers on JSON deny responses too.
   setAntiFramingHeaders(event, headerOpts)
 
   // Step 1: flag gate. Even browsers get this — the install link should

@@ -1,5 +1,6 @@
 import { createError, defineEventHandler, getHeader, getRequestURL, setResponseHeader } from 'h3'
 import { timingSafeEqualStr } from '~/server/utils/auth-helpers'
+import { mcpOAuthChallengeParameters } from '~/server/utils/mcp-oauth-metadata'
 
 // RFC 6750 §3 `realm` for the webhook-mode Bearer challenge. Identifies the
 // protection space in the `WWW-Authenticate` header so a spec-following MCP
@@ -34,7 +35,7 @@ export default defineEventHandler((event) => {
       // docker-smoke OAuth-on boot). BEARER-UNKNOWN matches the toolkit
       // middleware's bucket for an absent Bearer: indistinguishable from
       // one that was never minted.
-      setResponseHeader(event, 'www-authenticate', 'Bearer error="invalid_token", errorCode="BEARER-UNKNOWN", error_description="Bearer required"')
+      setResponseHeader(event, 'www-authenticate', `Bearer error="invalid_token", errorCode="BEARER-UNKNOWN", error_description="Bearer required", ${mcpOAuthChallengeParameters(useRuntimeConfig())}`)
       throw createError({ statusCode: 401, statusMessage: 'Bearer required', data: { errorCode: 'BEARER-UNKNOWN' } })
     }
     return

@@ -686,3 +686,65 @@ describe('useTokenStore (production singleton)', () => {
     })
   })
 })
+
+describe('token-store — Claude OAuth client and request state', () => {
+  it('registers and reads a public OAuth client after audit succeeds', async () => {
+    await store.registerMcpOAuthClient({
+      clientId: 'client-claude-1',
+      clientName: 'Claude',
+      redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+    })
+
+    expect(store.getMcpOAuthClient('client-claude-1')).toMatchObject({
+      clientId: 'client-claude-1',
+      clientName: 'Claude',
+      redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+    })
+    expect(recordAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'mcp.client.register',
+      actor: 'system',
+    }))
+  })
+
+  it('does not persist a client when the audit write fails', async () => {
+    recordAuditEvent.mockRejectedValueOnce(new Error('audit unavailable'))
+
+    await expect(store.registerMcpOAuthClient({
+      clientId: 'client-no-audit',
+      clientName: 'Claude',
+      redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+    })).rejects.toThrow('audit unavailable')
+    expect(store.getMcpOAuthClient('client-no-audit')).toBeUndefined()
+  })
+
+  it('binds an authorization request to its CSRF cookie and consumes it once', async () => {
+    await store.registerMcpOAuthClient({
+      clientId: 'client-flow',
+      clientName: 'Claude',
+      redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+    })
+    store.createMcpOAuthRequest({
+      flowId: 'flow-1',
+      clientId: 'client-flow',
+      redirectUri: 'https://claude.ai/api/mcp/auth_callback',
+      clientState: 'client-state',
+      codeChallenge: 'pkce-challenge',
+      resource: 'https://mcp.example.com/mcp',
+      scope: 'mcp:access offline_access',
+      csrfCookie: 'csrf-cookie',
+      expiresAt: Math.floor(Date.now() / 1000) + 300,
+    })
+
+    expect(store.bindMcpOAuthRequest('flow-1', 'wrong-cookie', 'dad.bitrix24.ru', 'b24-state')).toBe(false)
+    expect(store.bindMcpOAuthRequest('flow-1', 'csrf-cookie', 'dad.bitrix24.ru', 'b24-state')).toBe(true)
+    expect(store.bindMcpOAuthRequest('flow-1', 'csrf-cookie', 'dad.bitrix24.ru', 'b24-state-replay')).toBe(false)
+    expect(store.consumeMcpOAuthRequest('b24-state')).toMatchObject({
+      flowId: 'flow-1',
+      clientId: 'client-flow',
+      portal: 'dad.bitrix24.ru',
+      b24State: 'b24-state',
+      codeChallenge: 'pkce-challenge',
+    })
+    expect(store.consumeMcpOAuthRequest('b24-state')).toBeUndefined()
+  })
+})

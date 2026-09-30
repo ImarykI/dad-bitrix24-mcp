@@ -496,9 +496,13 @@ describe('/api/oauth/install — operator UX (browser landing form)', () => {
     // instead of failing with a mysterious magic-string mismatch.
     // (#232 test review.)
     const { PORTAL_ALLOW_LIST_RE } = await import('~/server/utils/portal-validation')
-    const expectedPattern = PORTAL_ALLOW_LIST_RE.source.replace(/^\^/, '').replace(/\$$/, '')
+    const expectedPattern = PORTAL_ALLOW_LIST_RE.source
+      .replace(/^\^/, '')
+      .replace(/\$$/, '')
+      .replace('[a-z0-9-]', '[a-z0-9\\-]')
     const res = await callHandler({}, { acceptHtml: true })
     expect(res.body).toContain(`pattern="${expectedPattern}"`)
+    expect(() => new RegExp(expectedPattern, 'v')).not.toThrow()
   })
 
   it('landing form is JS-free and inline-style-free (strict-CSP defence-in-depth)', async () => {
@@ -511,13 +515,13 @@ describe('/api/oauth/install — operator UX (browser landing form)', () => {
     expect(res.body).not.toMatch(/javascript:/i)
   })
 
-  it('landing form carries anti-framing + form-action self CSP (#221 posture extended for the form)', async () => {
+  it('landing form CSP keeps anti-framing without blocking the authorize redirect', async () => {
     const res = await callHandler({}, { acceptHtml: true })
     expect(res.headers['x-frame-options']).toBe('DENY')
     const csp = String(res.headers['content-security-policy'])
     expect(csp).toContain("default-src 'none'")
     expect(csp).toContain("frame-ancestors 'none'")
-    expect(csp).toContain('form-action /api/oauth/install')
+    expect(csp).not.toContain('form-action')
   })
 
   it('strict-CSP baseline: NO style-src directive when brand styles are off (the v0.2.0 contract)', async () => {

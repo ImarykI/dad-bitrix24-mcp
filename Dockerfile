@@ -17,6 +17,7 @@ FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NITRO_PORT=3000
+RUN mkdir -p /data && chown node:node /data
 COPY --from=builder /app/.output ./.output
 USER node
 EXPOSE 3000

@@ -37,7 +37,7 @@ export default defineNuxtConfig({
     bitrix24OauthClientId: '',
     bitrix24OauthClientSecret: '',
     bitrix24OauthRedirectUrl: '',
-    bitrix24OauthScope: 'user,task',
+    bitrix24OauthScope: 'user,task,im,disk',
     bitrix24OauthDbDir: '/data',
     // PR-2c: admin token guarding `/api/oauth/_health` (operator-tier
     // observability endpoint per OAUTH-DESIGN.md §11). When empty, the

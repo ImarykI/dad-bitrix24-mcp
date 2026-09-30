@@ -24,17 +24,14 @@ describe('b24_disk_search', () => {
   })
 
   it('uses the verified query/filter fields and omits signed download URLs', async () => {
-    fake.v2Call.mockResolvedValue(fakeOk({
-      result: Array.from({ length: 50 }, (_, index) => ({
-        ID: String(index + 9),
-        NAME: index === 0 ? 'report.md' : `report-${index}.md`,
-        TYPE: 'file',
-        STORAGE_ID: '2',
-        SIZE: '18',
-        DOWNLOAD_URL: 'https://portal/rest/download?auth=secret',
-      })),
-      next: 50,
-    }))
+    fake.v2Call.mockResolvedValue(fakeOk(Array.from({ length: 50 }, (_, index) => ({
+      ID: String(index + 9),
+      NAME: index === 0 ? 'report.md' : `report-${index}.md`,
+      TYPE: 'file',
+      STORAGE_ID: '2',
+      SIZE: '18',
+      DOWNLOAD_URL: 'https://portal/rest/download?auth=secret',
+    }))))
     const result = await tool.handler({ query: 'report', type: 'file', storageId: 2, folderId: 3, limit: 20, offset: 0 })
     expect(fake.v2Call).toHaveBeenCalledWith({
       method: 'disk.file.search',

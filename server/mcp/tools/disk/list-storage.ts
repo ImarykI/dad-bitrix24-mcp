@@ -12,11 +12,6 @@ interface StorageRow {
   ROOT_OBJECT_ID?: string | number
 }
 
-interface StorageListResponse {
-  result?: StorageRow[]
-  total?: string | number
-}
-
 function asId(value: string | number | undefined): number | null {
   const id = typeof value === 'string' ? Number.parseInt(value, 10) : value
   return Number.isSafeInteger(id) && Number(id) > 0 ? Number(id) : null
@@ -33,14 +28,14 @@ export default defineMcpTool({
   },
   handler: async ({ limit, offset }) => {
     const b24 = useBitrix24Tenant()
-    const response = await callV2<StorageListResponse>(
+    const raw = await callV2<StorageRow[]>(
       b24,
       'disk.storage.getList',
       { start: offset },
       'Failed to list Bitrix24 Drive storages',
     )
-    const raw = response?.result ?? []
-    const storages = raw.slice(0, limit).map(storage => ({
+    const rows = raw ?? []
+    const storages = rows.slice(0, limit).map(storage => ({
       id: asId(storage.ID),
       name: storage.NAME ?? null,
       module: storage.MODULE_ID ?? null,
@@ -48,15 +43,14 @@ export default defineMcpTool({
       entityId: storage.ENTITY_ID ?? null,
       rootFolderId: asId(storage.ROOT_OBJECT_ID),
     }))
-    const total = response?.total === undefined ? null : Number(response.total)
-    const hasMore = Number.isFinite(total) ? offset + storages.length < total! : raw.length > storages.length
+    const hasMore = rows.length > storages.length || rows.length >= 50
 
     return {
       content: [{
         type: 'text' as const,
         text: JSON.stringify({
           returned: storages.length,
-          total: Number.isFinite(total) ? total : null,
+          total: null,
           hasMore,
           ...(hasMore ? { nextOffset: offset + storages.length } : {}),
           storages,

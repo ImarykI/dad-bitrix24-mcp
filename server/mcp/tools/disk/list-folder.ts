@@ -16,11 +16,6 @@ interface DriveEntry {
   DELETED_TYPE?: string | number
 }
 
-interface DriveChildrenResponse {
-  result?: DriveEntry[]
-  total?: string | number
-}
-
 const positiveId = z.number().int().positive()
 
 function asId(value: string | number | undefined): number | null {
@@ -46,14 +41,14 @@ export default defineMcpTool({
 
     const b24 = useBitrix24Tenant()
     const method = folderId !== undefined ? 'disk.folder.getChildren' : 'disk.storage.getChildren'
-    const response = await callV2<DriveChildrenResponse>(
+    const raw = await callV2<DriveEntry[]>(
       b24,
       method,
       { id: folderId ?? storageId, start: offset },
       'Failed to list Bitrix24 Drive folder contents',
     )
-    const raw = response?.result ?? []
-    const entries = raw.slice(0, limit).map(entry => ({
+    const rows = raw ?? []
+    const entries = rows.slice(0, limit).map(entry => ({
       id: asId(entry.ID),
       name: entry.NAME ?? null,
       type: entry.TYPE ?? null,
@@ -63,8 +58,7 @@ export default defineMcpTool({
       createdAt: entry.CREATE_TIME ?? null,
       updatedAt: entry.UPDATE_TIME ?? null,
     }))
-    const total = response?.total === undefined ? null : Number(response.total)
-    const hasMore = Number.isFinite(total) ? offset + entries.length < total! : raw.length > entries.length
+    const hasMore = rows.length > entries.length || rows.length >= 50
 
     return {
       content: [{
@@ -73,7 +67,7 @@ export default defineMcpTool({
           containerType: folderId !== undefined ? 'folder' : 'storage',
           containerId: folderId ?? storageId,
           returned: entries.length,
-          total: Number.isFinite(total) ? total : null,
+          total: null,
           hasMore,
           ...(hasMore ? { nextOffset: offset + entries.length } : {}),
           entries,

@@ -15,11 +15,6 @@ interface DriveSearchEntry {
   DETAIL_URL?: string | null
 }
 
-interface DriveSearchResponse {
-  result?: DriveSearchEntry[]
-  next?: number
-}
-
 function asId(value: string | number | undefined): number | null {
   const id = typeof value === 'string' ? Number.parseInt(value, 10) : value
   return Number.isSafeInteger(id) && Number(id) > 0 ? Number(id) : null
@@ -44,7 +39,7 @@ export default defineMcpTool({
       ...(storageId !== undefined ? { STORAGE_ID: storageId } : {}),
       ...(folderId !== undefined ? { FOLDER_ID: folderId } : {}),
     }
-    const response = await callV2<DriveSearchResponse>(
+    const raw = await callV2<DriveSearchEntry[]>(
       b24,
       'disk.file.search',
       {
@@ -55,8 +50,8 @@ export default defineMcpTool({
       },
       'Failed to search Bitrix24 Drive',
     )
-    const raw = response?.result ?? []
-    const results = raw.slice(0, limit).map(entry => ({
+    const rows = raw ?? []
+    const results = rows.slice(0, limit).map(entry => ({
       id: asId(entry.ID),
       name: entry.NAME ?? null,
       type: entry.TYPE ?? null,
@@ -67,7 +62,7 @@ export default defineMcpTool({
       updatedAt: entry.UPDATE_TIME ?? null,
       detailUrl: entry.DETAIL_URL ?? null,
     }))
-    const hasMore = response?.next !== undefined || raw.length > results.length
+    const hasMore = rows.length > results.length || rows.length >= 50
 
     return {
       content: [{

@@ -17,14 +17,17 @@ describe('b24_disk_storage_list', () => {
   })
 
   it('lists with disk.storage.getList and returns compact metadata plus next offset', async () => {
-    fake.v2Call.mockResolvedValue(fakeOk({
-      result: [{ ID: '7', NAME: 'My Drive', ENTITY_TYPE: 'user', ROOT_OBJECT_ID: '9', secret: 'omit' }],
-      total: 42,
-    }))
+    fake.v2Call.mockResolvedValue(fakeOk(Array.from({ length: 50 }, (_, index) => ({
+      ID: String(index + 7),
+      NAME: index === 0 ? 'My Drive' : `Drive ${index}`,
+      ENTITY_TYPE: 'user',
+      ROOT_OBJECT_ID: '9',
+      secret: 'omit',
+    }))))
     const result = await tool.handler({ limit: 20, offset: 20 })
     expect(fake.v2Call).toHaveBeenCalledWith({ method: 'disk.storage.getList', params: { start: 20 } })
     const payload = JSON.parse(result.content[0]!.text)
-    expect(payload.nextOffset).toBe(21)
+    expect(payload.nextOffset).toBe(40)
     expect(payload.storages[0]).toEqual({ id: 7, name: 'My Drive', module: null, entityType: 'user', entityId: null, rootFolderId: 9 })
     expect(result.content[0]!.text).not.toContain('secret')
   })

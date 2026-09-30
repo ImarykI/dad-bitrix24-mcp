@@ -19,13 +19,14 @@ describe('b24_disk_folder_list', () => {
   })
 
   it('selects folder or storage root endpoint and omits download URLs', async () => {
-    fake.v2Call.mockResolvedValue(fakeOk({ result: [{ ID: '5', NAME: 'Notes.txt', TYPE: 'file', SIZE: '10', DOWNLOAD_URL: 'private' }], total: 1 }))
+    fake.v2Call.mockResolvedValue(fakeOk([{ ID: '5', NAME: 'Notes.txt', TYPE: 'file', SIZE: '10', DOWNLOAD_URL: 'private' }]))
     const result = await tool.handler({ folderId: 3, limit: 20, offset: 0 })
     expect(fake.v2Call).toHaveBeenCalledWith({ method: 'disk.folder.getChildren', params: { id: 3, start: 0 } })
+    expect(JSON.parse(result.content[0]!.text).entries[0]).toMatchObject({ id: 5, name: 'Notes.txt', type: 'file' })
     expect(result.content[0]!.text).not.toContain('DOWNLOAD_URL')
 
     fake.v2Call.mockReset()
-    fake.v2Call.mockResolvedValue(fakeOk({ result: [], total: 0 }))
+    fake.v2Call.mockResolvedValue(fakeOk([]))
     await tool.handler({ storageId: 8, limit: 20, offset: 0 })
     expect(fake.v2Call).toHaveBeenCalledWith({ method: 'disk.storage.getChildren', params: { id: 8, start: 0 } })
   })

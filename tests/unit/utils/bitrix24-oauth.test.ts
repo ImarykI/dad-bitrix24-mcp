@@ -623,6 +623,27 @@ describe('useBitrix24OAuth — domain & endpoint validation (#220)', () => {
     finally { restore() }
   })
 
+  it('refresh: accepts a known central OAuth domain without changing the stored portal', async () => {
+    const { factoryCb, restore } = await captureFactoryCb()
+    try {
+      fetchMock.mockResolvedValue(jsonResp(200, {
+        access_token: 'new-access',
+        refresh_token: 'new-refresh',
+        expires_in: 3600,
+        scope: 'user,task',
+        domain: 'oauth.bitrix24.tech',
+      }))
+
+      const refreshedAuth = await factoryCb()
+      const row = store.getTokens(SAMPLE_TENANT.memberId, SAMPLE_TENANT.userId)!
+      expect(row.accessToken).toBe('new-access')
+      expect(row.portalDomain).toBe(SAMPLE_TENANT.portalDomain)
+      expect(refreshedAuth.domain).toBe(SAMPLE_TENANT.portalDomain)
+      expect(refreshedAuth.client_endpoint).toBe(`https://${SAMPLE_TENANT.portalDomain}/rest/`)
+    }
+    finally { restore() }
+  })
+
   it('refresh: refuses domain that fails the allow-list (e.g. attacker.example.com)', async () => {
     const { factoryCb, restore } = await captureFactoryCb()
     try {

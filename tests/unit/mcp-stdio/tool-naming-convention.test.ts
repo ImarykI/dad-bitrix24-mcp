@@ -99,7 +99,7 @@ async function extractToolName(filePath: string): Promise<string | null> {
 }
 
 function isMetaPath(filePath: string): boolean {
-  return relative(HTTP_TOOLS_DIR, filePath).startsWith('meta/')
+  return relative(HTTP_TOOLS_DIR, filePath).replace(/\\/g, '/').startsWith('meta/')
 }
 
 describe('tool naming convention (issue #129)', () => {

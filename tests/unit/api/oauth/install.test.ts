@@ -35,7 +35,7 @@ const runtimeConfig: Record<string, unknown> = {
   bitrix24OauthClientId: 'app.cid.12345',
   bitrix24OauthClientSecret: 'super-secret',
   bitrix24OauthRedirectUrl: 'https://mcp.example.com/api/oauth/callback',
-  bitrix24OauthScope: 'user,task',
+  bitrix24OauthScope: 'user,task,im,disk',
 }
 vi.stubGlobal('useRuntimeConfig', () => runtimeConfig)
 
@@ -76,7 +76,7 @@ beforeEach(() => {
   runtimeConfig.bitrix24OauthEnabled = true
   runtimeConfig.bitrix24OauthClientId = 'app.cid.12345'
   runtimeConfig.bitrix24OauthRedirectUrl = 'https://mcp.example.com/api/oauth/callback'
-  runtimeConfig.bitrix24OauthScope = 'user,task'
+  runtimeConfig.bitrix24OauthScope = 'user,task,im,disk'
   // Brand-styled landing (#233) — defaults match production (off) so
   // the strict-CSP baseline tests keep their meaning. Individual cases
   // flip these locally and restore.
@@ -311,7 +311,7 @@ describe('/api/oauth/install — happy path', () => {
     const url = new URL(location)
     expect(url.searchParams.get('client_id')).toBe('app.cid.12345')
     expect(url.searchParams.get('redirect_uri')).toBe('https://mcp.example.com/api/oauth/callback')
-    expect(url.searchParams.get('scope')).toBe('user,task')
+    expect(url.searchParams.get('scope')).toBe('user,task,im,disk')
     expect(url.searchParams.get('response_type')).toBe('code')
     const state = url.searchParams.get('state')!
     expect(state).toMatch(/^[a-f0-9]{64}$/) // 32 bytes hex
@@ -484,9 +484,11 @@ describe('/api/oauth/install — operator UX (browser landing form)', () => {
 
   it('landing form lists the configured OAuth scopes and the app clientId', async () => {
     const res = await callHandler({}, { acceptHtml: true })
-    // Default scope per the test fixture is 'user,task' — both <li>s present.
+    // Default OAuth scopes match the user/chat/Drive tool catalogue.
     expect(res.body).toMatch(/<li><code>user<\/code><\/li>/)
     expect(res.body).toMatch(/<li><code>task<\/code><\/li>/)
+    expect(res.body).toMatch(/<li><code>im<\/code><\/li>/)
+    expect(res.body).toMatch(/<li><code>disk<\/code><\/li>/)
     expect(res.body).toContain('app.cid.12345')
   })
 
@@ -657,12 +659,14 @@ describe('/api/oauth/install — operator UX (browser landing form)', () => {
     expect(res.body).toContain('app&lt;script&gt;alert(1)&lt;/script&gt;&amp;&quot;id&#39;X')
   })
 
-  it('empty scope env falls back to `user,task` in the landing form (regression guard for the `|| user,task` default)', async () => {
+  it('empty scope env falls back to `user,task,im,disk` in the landing form', async () => {
     runtimeConfig.bitrix24OauthScope = ''
     const res = await callHandler({}, { acceptHtml: true })
     expect(res.statusCode).toBe(200)
     expect(res.body).toMatch(/<li><code>user<\/code><\/li>/)
     expect(res.body).toMatch(/<li><code>task<\/code><\/li>/)
+    expect(res.body).toMatch(/<li><code>im<\/code><\/li>/)
+    expect(res.body).toMatch(/<li><code>disk<\/code><\/li>/)
   })
 
   it('landing render does NOT count against the rate-limit bucket (#232 security: F5 must not self-ban)', async () => {

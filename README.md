@@ -9,7 +9,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Bitrix24 JS](https://img.shields.io/badge/Made%20with-Bitrix24%20JS-2fc6f6?logo=bitrix24&labelColor=020420)](https://bitrix24.github.io/b24jssdk/)
 
-Give AI assistants (Claude, Cursor, Claude Code, …) real access to a Bitrix24 portal you already operate. Install in one of three shapes — a one-file Claude Desktop bundle for solo operators, a local HTTP server for developers, or a Docker container with TLS + per-user OAuth for SaaS teams. Ships **29 production-grade Bitrix24 tools** — 27 in the **tasks** domain (create / update / lifecycle / checklists / results / elapsed time / dependencies) and 2 user-lookup helpers — plus a `bx24mcp_submit_feedback` meta-tool and the auth, throttling, logging, and test scaffolding you need to fork it and add your own (CRM is the demand-driven next zone).
+Give AI assistants (Claude, Cursor, Claude Code, …) real access to a Bitrix24 portal you already operate. Install in one of three shapes — a one-file Claude Desktop bundle for solo operators, a local HTTP server for developers, or a Docker container with TLS + per-user OAuth for SaaS teams. Ships **46 Bitrix24 tools** — 27 task tools, 3 user tools, 8 chat tools, and 8 Drive tools — plus 2 MCP meta-tools and the auth, throttling, logging, and test scaffolding you need to fork it and add your own (CRM remains the demand-driven next zone).
 
 > **What is Bitrix24?** An all-in-one CRM + task management + comms suite, ~12 million organisations. Strongest in Russia/CIS, Brazil/LatAm, Eastern Europe, and SMB segments globally. Competes with HubSpot/Pipedrive on the CRM side and Asana/Monday on tasks. This project gives AI assistants access to a Bitrix24 portal you already operate — it is **not** a Bitrix24 alternative.
 
@@ -54,7 +54,7 @@ Off-the-shelf Bitrix24 MCP servers are either toy demos or vendor-locked. This p
 
 > Non-technical operator? Skip this section. The [Desktop Extension](#desktop-extension--claude-desktop-one-file-two-clicks) path is two clicks; the [Remote MCP](#remote-mcp--production-server-claudeai-web) path is a connector URL — neither needs a checkout, a terminal, or `pnpm`.
 
-**Prerequisite — mint an incoming webhook in your Bitrix24 portal.** In the portal: *Developer resources → Other → Inbound webhook* (or "Applications → Developer resources" on some skins). Grant the scopes you plan to call (at minimum `user` + `task` for the current tool set), save, and copy the URL of the form `https://<your-portal>.bitrix24.com/rest/<user-id>/<webhook-code>/` — that is `NUXT_BITRIX24_WEBHOOK_URL`.
+**Prerequisite — mint an incoming webhook in your Bitrix24 portal.** In the portal: *Developer resources → Other → Inbound webhook* (or "Applications → Developer resources" on some skins). Grant the scopes you plan to call (at minimum `user`, `task`, `im`, and `disk` for the current tool set), save, and copy the URL of the form `https://<your-portal>.bitrix24.com/rest/<user-id>/<webhook-code>/` — that is `NUXT_BITRIX24_WEBHOOK_URL`.
 
 > **Create the webhook under a dedicated service user**, not a real employee's account. The webhook inherits the creator's permissions for every call, so binding it to a personal account ties the integration to that person's role, department visibility, and tenure — anyone who leaves the company or loses rights silently breaks the MCP. Grant the service user the **minimum rights the tool set actually needs** (admin only if you need cross-user task visibility and want to avoid "task not found" / `ACCESS_DENIED` surprises on entities a non-admin user happens not to see).
 >
@@ -91,6 +91,23 @@ Open Nuxt DevTools in the browser to reach the MCP Inspector for interactive too
 |---|---|
 | `b24_user_me` | Returns the Bitrix24 user that owns the configured webhook. Useful as a connectivity check. |
 | `b24_user_find` | Find users by name / surname / position / department, or free-text. **Call this before any tool that takes a userId** — operators speak in names, not numeric ids. |
+| `b24_user_get` | Get a compact profile by user ID via `user.get`. |
+| `b24_chat_recent` | Recent dialogs via `im.recent.list`; 20 default / 50 max with offset pagination. Open Lines are excluded by default. |
+| `b24_chat_find` | Find accessible chats by title/participant via `im.search.chat.list`; 2+ characters, 20 default / 50 max. |
+| `b24_chat_get` | Compact dialog details via `im.dialog.get`. |
+| `b24_chat_message_list` | Newest-first history via `im.dialog.messages.get`; `LAST_ID` cursor, 20 default / 50 max, message bodies capped at 1,200 characters. |
+| `b24_chat_message_search` | Search within one dialog via `im.dialog.messages.search`; newest-first, bounded results and text. |
+| `b24_chat_recent_search` | Search up to 10 recent dialogs (20 max) in one batch; returns matches with their `dialogId`. |
+| `b24_chat_message_send` | Send via `im.message.add` as the authenticated user; requires confirmation of recipient and exact content. |
+| `b24_chat_file_send` | Upload to chat via current `im.v2.File.upload`; requires confirmation, standard Base64, 5 MiB maximum. |
+| `b24_disk_storage_list` | Readable Drive storages via `disk.storage.getList`; 20 default / 50 max, paginated. |
+| `b24_disk_folder_list` | Folder children or storage root via `disk.folder.getChildren` / `disk.storage.getChildren`; 20 default / 50 max. |
+| `b24_disk_search` | Search Drive via `disk.file.search`; query 3–255 characters, 20 default / 50 max. |
+| `b24_disk_file_get` | Drive file metadata via `disk.file.get`, omitting signed download URLs. |
+| `b24_disk_file_link_get` | Public URL via `disk.file.getExternalLink`; requires confirmation and warns that anyone with the link may access it. |
+| `b24_disk_file_text_read` | Read UTF-8 TXT/Markdown/CSV/JSON; same-portal download, 1 MiB input / 20,000-character output cap. |
+| `b24_disk_folder_create` | Create via `disk.folder.addSubFolder`; requires confirmation of parent and name. |
+| `b24_disk_file_upload` | Upload via `disk.folder.uploadFile`; requires confirmation of destination/name/content, 5 MiB maximum. |
 | `b24_task_create` | Create a task — title, responsibleId required; description / deadline / groupId / priority / accomplices / auditors optional. |
 | `b24_task_list` | List tasks with filter (`{ RESPONSIBLE_ID, STATUS, "!STATUS", ">=DEADLINE", … }`), order, select, and pagination (page size fixed at 50). |
 | `b24_task_update` | Update an existing task by id with a partial UPPERCASE-keyed `fields` object. |
@@ -120,7 +137,7 @@ Open Nuxt DevTools in the browser to reach the MCP Inspector for interactive too
 | `b24_task_dependency_remove` | Remove a "previous task" dependency. Requires `confirmDelete: true`. |
 | `bx24mcp_submit_feedback` | Meta-tool: lets the AI agent file a GitHub issue against this repository with structured feedback. See [`docs/FEEDBACK.md`](./docs/FEEDBACK.md). |
 
-29 Bitrix24 + 1 meta = **30 tools total**.
+46 Bitrix24 + 2 meta = **48 tools total**.
 
 The 8 task-mutation tools above (`start_task` / `pause_task` / `complete_task` / `approve_task` / `disapprove_task` / `defer_task` / `renew_task` / `rate_task`) accept a single id **or** an array for batch mode (up to **25**; pass `force: true` to override) and go through one HTTP round-trip via the `batchV2` helper. The 3 checklist actions (`complete_checklist_item` / `renew_checklist_item` / `delete_checklist_item`) also accept single or batch (up to **50**; `force: true` to override) via `batchV2`. `delete_elapsed_time` and `remove_task_dependency` likewise take a single id or an array for batch deletion (up to **50**; `force: true` to override; each still gated by `confirmDelete: true`). `add_checklist_item` and `list_checklist_items` are single-call only by design. Rate limiting, retry, and adaptive back-pressure are provided by the [`@bitrix24/b24jssdk`](https://www.npmjs.com/package/@bitrix24/b24jssdk) `RestrictionManager` — initialised with `ParamsFactory.getDefault()` (standard tariff: burst 50, drain 2 req/sec, 3 retries on transient errors). Override at runtime via `client.setRestrictionManagerParams(ParamsFactory.getEnterprise())` etc.
 

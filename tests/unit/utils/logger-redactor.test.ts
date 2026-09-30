@@ -82,6 +82,17 @@ describe('redactString', () => {
     expect(out).not.toContain(V2_SECRET)
   })
 
+  it('redacts signed Drive download and chat-file URL query values', () => {
+    const driveUrl = 'https://portal.bitrix24.com/rest/download.json?auth=access-secret&token=disk-secret'
+    const chatUrl = 'https://portal.bitrix24.com/bitrix/services/main/ajax.php?action=disk.api.file.download&signature=signed-secret&_esd=esd-secret'
+    const out = redactString(`${driveUrl} ${chatUrl}`)
+    for (const secret of ['access-secret', 'disk-secret', 'signed-secret', 'esd-secret']) {
+      expect(out).not.toContain(secret)
+    }
+    expect(out).toContain('auth=<REDACTED>&token=<REDACTED>')
+    expect(out).toContain('signature=<REDACTED>&_esd=<REDACTED>')
+  })
+
   it('passes through the SDK 1.1.2 `***REDACTED***` placeholder unchanged', () => {
     // SDK 1.1.2's `redactSensitiveParams` writes `***REDACTED***` in place
     // of values under credential-bearing keys. When that pre-redacted
@@ -155,6 +166,8 @@ describe('redactValue', () => {
       secret: 'shhhh',
       access_token: 'bearer_xyz',
       refresh_token: 'refresh_abc',
+      signature: 'signed_secret',
+      _esd: 'esd_secret',
       otherField: 'visible',
     }
     const out = redactValue(input) as typeof input
@@ -164,6 +177,8 @@ describe('redactValue', () => {
     expect(out.secret).toBe('<REDACTED>')
     expect(out.access_token).toBe('<REDACTED>')
     expect(out.refresh_token).toBe('<REDACTED>')
+    expect(out.signature).toBe('<REDACTED>')
+    expect(out._esd).toBe('<REDACTED>')
     expect(out.otherField).toBe('visible')
   })
 

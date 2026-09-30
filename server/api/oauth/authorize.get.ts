@@ -93,7 +93,7 @@ export default defineEventHandler(async (event) => {
     authorizeUrl.searchParams.set('client_id', clientId)
     authorizeUrl.searchParams.set('state', b24State)
     authorizeUrl.searchParams.set('redirect_uri', redirectUrl)
-    authorizeUrl.searchParams.set('scope', String(config.bitrix24OauthScope ?? 'user,task'))
+    authorizeUrl.searchParams.set('scope', String(config.bitrix24OauthScope ?? 'user,task,im,disk'))
     authorizeUrl.searchParams.set('response_type', 'code')
     return sendRedirect(event, authorizeUrl.toString(), 302)
   }

@@ -20,6 +20,16 @@
  */
 import users_currentUser from '~/server/mcp/tools/users/current-user'
 import users_findUser from '~/server/mcp/tools/users/find-user'
+import users_getUser from '~/server/mcp/tools/users/get-user'
+
+import chats_recentChat from '~/server/mcp/tools/chats/recent-chat'
+import chats_findChat from '~/server/mcp/tools/chats/find-chat'
+import chats_getChat from '~/server/mcp/tools/chats/get-chat'
+import chats_listChatMessages from '~/server/mcp/tools/chats/list-chat-messages'
+import chats_searchChatMessages from '~/server/mcp/tools/chats/search-chat-messages'
+import chats_searchRecentChatMessages from '~/server/mcp/tools/chats/search-recent-chat-messages'
+import chats_sendChatMessage from '~/server/mcp/tools/chats/send-chat-message'
+import chats_sendChatFile from '~/server/mcp/tools/chats/send-chat-file'
 
 import tasks_createTask from '~/server/mcp/tools/tasks/create-task'
 import tasks_listTasks from '~/server/mcp/tools/tasks/list-tasks'
@@ -49,12 +59,30 @@ import tasks_deleteElapsedTime from '~/server/mcp/tools/tasks/delete-elapsed-tim
 import tasks_addTaskDependency from '~/server/mcp/tools/tasks/add-task-dependency'
 import tasks_removeTaskDependency from '~/server/mcp/tools/tasks/remove-task-dependency'
 
+import disk_listStorage from '~/server/mcp/tools/disk/list-storage'
+import disk_listFolder from '~/server/mcp/tools/disk/list-folder'
+import disk_searchDrive from '~/server/mcp/tools/disk/search-drive'
+import disk_getFile from '~/server/mcp/tools/disk/get-file'
+import disk_getFileLink from '~/server/mcp/tools/disk/get-file-link'
+import disk_readFileText from '~/server/mcp/tools/disk/read-file-text'
+import disk_createFolder from '~/server/mcp/tools/disk/create-folder'
+import disk_uploadFile from '~/server/mcp/tools/disk/upload-file'
+
 import meta_submitFeedback from '~/server/mcp/tools/meta/submit-feedback'
 import meta_listSessions from '~/server/mcp/tools/meta/list-sessions'
 
 export const tools = [
   users_currentUser,
   users_findUser,
+  users_getUser,
+  chats_recentChat,
+  chats_findChat,
+  chats_getChat,
+  chats_listChatMessages,
+  chats_searchChatMessages,
+  chats_searchRecentChatMessages,
+  chats_sendChatMessage,
+  chats_sendChatFile,
   tasks_createTask,
   tasks_listTasks,
   tasks_updateTask,
@@ -82,6 +110,14 @@ export const tools = [
   tasks_deleteElapsedTime,
   tasks_addTaskDependency,
   tasks_removeTaskDependency,
+  disk_listStorage,
+  disk_listFolder,
+  disk_searchDrive,
+  disk_getFile,
+  disk_getFileLink,
+  disk_readFileText,
+  disk_createFolder,
+  disk_uploadFile,
   meta_submitFeedback,
   meta_listSessions,
 ] as const

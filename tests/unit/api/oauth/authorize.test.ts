@@ -11,7 +11,7 @@ const runtimeConfig: Record<string, unknown> = {
   bitrix24OauthClientId: 'b24-app-id',
   bitrix24OauthClientSecret: 'not-used-by-test',
   bitrix24OauthRedirectUrl: 'https://mcp.example.com/api/oauth/callback',
-  bitrix24OauthScope: 'user,task',
+  bitrix24OauthScope: 'user,task,im,disk',
 }
 vi.stubGlobal('useRuntimeConfig', () => runtimeConfig)
 
@@ -97,7 +97,7 @@ beforeEach(async () => {
   runtimeConfig.bitrix24OauthEnabled = true
   runtimeConfig.bitrix24OauthClientId = 'b24-app-id'
   runtimeConfig.bitrix24OauthRedirectUrl = 'https://mcp.example.com/api/oauth/callback'
-  runtimeConfig.bitrix24OauthScope = 'user,task'
+  runtimeConfig.bitrix24OauthScope = 'user,task,im,disk'
   await store.registerMcpOAuthClient({
     clientId: validRequest.client_id,
     clientName: 'Claude',

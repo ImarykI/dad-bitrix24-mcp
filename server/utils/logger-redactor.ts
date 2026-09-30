@@ -51,16 +51,16 @@ import type { LoggerInterface, LogLevel } from '@bitrix24/b24jssdk'
 const WEBHOOK_URL_RE = /(https?:\/\/[^/\s"'<>]+\/rest\/(?:api\/)?\d+\/)([A-Za-z0-9_-]+)/g
 
 /**
- * OAuth-flow secrets in URL query-string position. Catches the four
- * parameters that carry credential material across the install/callback/
- * refresh surface (`docs/OAUTH-DESIGN.md §11`):
+ * Credential-bearing URL query strings. Covers OAuth exchange tokens and
+ * Bitrix24 Drive/chat download links, which carry one-time or signed access
+ * values even when the URL is nested in an SDK response payload:
  *
  *   - `?code=…`           — install-time authorization code
  *   - `?refresh_token=…`  — long-lived refresh token (rotation surface)
  *   - `?access_token=…`   — short-lived bearer (defence-in-depth)
- *   - `?client_secret=…`  — should never appear in URLs but matched for
- *                            the case where a misconfigured SDK puts it
- *                            in a body that gets stringified into a URL
+ *   - `?client_secret=…`  — should never appear in URLs but matched defensively
+ *   - `?auth=…` / `?token=…` — Drive download credentials
+ *   - `?signature=…` / `?_esd=…` — signed chat-file links
  *
  * Capture groups:
  *   1. The `?key=` or `&key=` separator + parameter name (preserved).
@@ -74,7 +74,7 @@ const WEBHOOK_URL_RE = /(https?:\/\/[^/\s"'<>]+\/rest\/(?:api\/)?\d+\/)([A-Za-z0
  * redactor walks it. Fixture shape 4 (JSON-stringified response body)
  * is covered by {@link OAUTH_JSON_RE} below.
  */
-const OAUTH_URL_RE = /([?&](?:code|refresh_token|access_token|client_secret)=)([^&\s"'<>]+)/g
+const SENSITIVE_URL_QUERY_RE = /([?&](?:code|refresh_token|access_token|client_secret|auth|token|signature|_esd)=)([^&\s"'<>]+)/gi
 
 /**
  * OAuth secrets in JSON-literal position. Catches the case where a
@@ -105,7 +105,7 @@ const OAUTH_URL_RE = /([?&](?:code|refresh_token|access_token|client_secret)=)([
  * backslash mid-token and leaked the tail (`<REDACTED>abc` instead of
  * `<REDACTED>`).
  */
-const OAUTH_JSON_RE = /("(?:access_token|refresh_token|client_secret)"\s*:\s*")([^"]+)/g
+const OAUTH_JSON_RE = /("(?:access_token|refresh_token|client_secret|auth|token|signature|_esd)"\s*:\s*")(?!(?:\*\*\*REDACTED\*\*\*|<REDACTED>))([^"]+)/gi
 
 /**
  * Credential-bearing key names whose values should be masked regardless of
@@ -116,13 +116,13 @@ const OAUTH_JSON_RE = /("(?:access_token|refresh_token|client_secret)"\s*:\s*")(
  * concept of OAuth client secrets, but our install/callback surface
  * (PR-2c) can pass them through a structured logger context.
  */
-const SENSITIVE_KEYS = new Set(['auth', 'password', 'token', 'secret', 'access_token', 'refresh_token', 'client_secret'])
+const SENSITIVE_KEYS = new Set(['auth', 'password', 'token', 'secret', 'access_token', 'refresh_token', 'client_secret', 'signature', '_esd'])
 
 /** Redact webhook secrets AND OAuth secrets out of any string. Non-matching strings pass through. */
 export function redactString(input: string): string {
   return input
     .replace(WEBHOOK_URL_RE, '$1<REDACTED>')
-    .replace(OAUTH_URL_RE, '$1<REDACTED>')
+    .replace(SENSITIVE_URL_QUERY_RE, '$1<REDACTED>')
     .replace(OAUTH_JSON_RE, '$1<REDACTED>')
 }
 

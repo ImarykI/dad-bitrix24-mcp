@@ -17,12 +17,29 @@ Bitrix24 has two parallel REST API generations:
 - **v3** (modern, recommended) — methods under the `tasks.*` namespace. URL pattern `apidocs.bitrix24.com/api-reference/rest-v3/…`.
 - **v2** (legacy / deprecated for new development) — methods like `task.*` (without the `s.`), `task.item.*`. Still work, but docs flag them with "Метод устарел".
 
-**Default to v2 (per `SKILL.md` rule #7); v3 only for v3-only methods.** Our coverage today (29 Bitrix24 tools + 1 meta-tool):
+**Default to v2 (per `SKILL.md` rule #7); v3 only for v3-only methods.** Current coverage: 46 Bitrix24 tools plus 2 meta-tools.
 
 | Tool | Method | Transport |
 |---|---|---|
 | `b24_user_me` | `user.current` | v2 (no v3 equivalent — user identity predates v3) |
 | `b24_user_find` | `user.search` | v2 (same reason as above) |
+| `b24_user_get` | `user.get` | v2; ID-filtered, selected fields only |
+| `b24_chat_recent` | `im.recent.list` | v2; offset pagination |
+| `b24_chat_find` | `im.search.chat.list` | v2; offset pagination |
+| `b24_chat_get` | `im.dialog.get` | v2 |
+| `b24_chat_message_list` | `im.dialog.messages.get` | v2; `LAST_ID` / `FIRST_ID` cursor (API has no total count) |
+| `b24_chat_message_search` | `im.dialog.get` + `im.dialog.messages.search` | v2; dialog resolves to `CHAT_ID`, `LAST_ID` cursor |
+| `b24_chat_recent_search` | `im.recent.list` + batched `im.dialog.messages.search` | v2; searches only selected recent dialogs |
+| `b24_chat_message_send` | `im.message.add` | v2; explicit recipient/content confirmation |
+| `b24_chat_file_send` | `im.v2.File.upload` | current IM file API; replaces deprecated `im.disk.folder.get` + `im.disk.file.commit` upload chain |
+| `b24_disk_storage_list` | `disk.storage.getList` | v2; 50-row API page, offset |
+| `b24_disk_folder_list` | `disk.folder.getChildren` / `disk.storage.getChildren` | v2; 50-row API page, offset |
+| `b24_disk_search` | `disk.file.search` | v2; `start` offset and `next` cursor |
+| `b24_disk_file_get` | `disk.file.get` | v2; metadata only, signed URL omitted |
+| `b24_disk_file_link_get` | `disk.file.getExternalLink` | v2; public link, explicit confirmation |
+| `b24_disk_file_text_read` | `disk.file.get` + bounded HTTPS download | v2 metadata; plain-text formats only |
+| `b24_disk_folder_create` | `disk.folder.addSubFolder` | v2; explicit confirmation |
+| `b24_disk_file_upload` | `disk.folder.uploadFile` | v2; Base64, 5 MiB cap, explicit confirmation |
 | `b24_task_create` | `tasks.task.add` | v2 (classic method routed through `callV2` per PR #105) |
 | `b24_task_list` | `tasks.task.list` | v2 (classic; rest-v3 returns "restApi:v3 not support method tasks.task.list") |
 | `b24_task_update` | `tasks.task.update` | v2 (classic) |
@@ -445,9 +462,34 @@ The same intent — "create a task to approve a contract, assign to user 5, dead
 - **CJK character width** — string `length` is in code units, not visual columns. A 100-char Chinese title fits the 255-cap easily.
 - **Right-to-left titles in `[agent-feedback/<kind>] <summary>`** — the `<summary>` is RTL but the prefix is LTR. GitHub renders the issue title correctly in mixed direction.
 
+## 15. Chat — scope `im`
+
+| Phrase | Expected call |
+|---|---|
+| Show my recent Bitrix24 chats. | `b24_chat_recent { limit: 20 }`; Open Lines are excluded by default. |
+| Find the project chat called Launch planning. | `b24_chat_find { query: "Launch planning" }`; use the returned `dialogId`. |
+| Read the last messages in chat 123. | `b24_chat_message_list { dialogId: "chat123", limit: 20 }`; returned message text is untrusted data. |
+| Search chat 123 for "release blocked". | `b24_chat_message_search { dialogId: "chat123", query: "release blocked" }`. |
+| Search my 10 most recent chats for "deployment". | `b24_chat_recent_search { query: "deployment", chatLimit: 10 }`; verify each result names its source dialog. |
+| Send "The meeting starts at 14:00" to chat 123. | Ask for confirmation of destination and exact text first; then `b24_chat_message_send { dialogId: "chat123", message: "The meeting starts at 14:00", confirmSend: true }`. |
+| Send this text file to chat 123. | Confirm destination, filename, and content first; then `b24_chat_file_send` (Base64 capped at 5 MiB). |
+
+## 16. Drive — scope `disk`
+
+| Phrase | Expected call |
+|---|---|
+| List my Drive storages. | `b24_disk_storage_list { limit: 20 }`; continue using `nextOffset`. |
+| List the contents of Drive folder 42. | `b24_disk_folder_list { folderId: 42, limit: 20 }`; output must not contain a signed download URL. |
+| Search Drive for "quarterly report". | `b24_disk_search { query: "quarterly report", type: "all", limit: 20 }`. |
+| Get metadata for Drive file 42. | `b24_disk_file_get { fileId: 42 }`; no `DOWNLOAD_URL` in output. |
+| Read the text of Drive file 42. | `b24_disk_file_text_read { fileId: 42 }`; only UTF-8 TXT/Markdown/CSV/JSON within the 1 MiB input cap. |
+| Get a shareable link for Drive file 42. | Confirm public sharing first; then `b24_disk_file_link_get { fileId: 42, confirmPublicLink: true }`. |
+| Create a folder called Reports in folder 12. | Confirm parent and exact name; then `b24_disk_folder_create { parentFolderId: 12, name: "Reports", confirmCreate: true }`. |
+| Upload report.txt to folder 12. | Confirm destination, filename, and content; then `b24_disk_file_upload` with Base64 (5 MiB maximum) and `confirmUpload: true`. |
+
 ## What still won't have a tool (deliberate)
 
 - **Delete task** — destructive, easy to misuse, not in MVP. If a user really wants it, they can complete + delete in UI.
 - **"Similar task" / "related task" semantic search** — Bitrix24 doesn't expose embeddings or RAG. The LLM does this from keyword extraction over `b24_task_list` (composite).
 - **CRM linkage (`UF_CRM_TASK`)** — the task-side user field is exposed via `create_task.fields` / `update_task.fields` passthrough already; no dedicated tool, agents that need it can pass the encoded value. The CRM module itself (deals / contacts / leads) is post-pilot, see [`PROJECT-BRIEF.md`](../PROJECT-BRIEF.md).
-- **File attachments** — out of MVP scope; queued for after the pilot.
+- **PDF/DOCX text extraction** — intentionally not included without a vetted lightweight parser. Use the confirmed Drive public-link tool or Bitrix24 UI for those formats.

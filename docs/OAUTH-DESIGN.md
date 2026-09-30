@@ -25,7 +25,7 @@ OAuth 2.0 via `B24OAuth` (shipped by `@bitrix24/b24jssdk`) replaces both shortco
 3. Coexistence with the webhook flow: webhook stays as the dev / single-tenant fallback. Both transports compile and pass tests; only one is wired at runtime per deployment.
 4. Token persistence with refresh-on-expiry handled inside `useBitrix24OAuth()` so tool code stays unchanged.
 5. **App-registration shape: marketplace application.** Required to satisfy the Phase-3 DoD ("multiple users connect their own portals"). Local-app is supported as a dev / single-tenant fallback path but not the recommended production shape.
-6. **OAuth scope set: `user` + `task`** to start, matching what the current tool catalogue exercises. The scope string is hard-coded in the install URL and mirrored in `.env.example` comments; PRs that add new tools must also update the scope (added to `docs/ADDING-TOOLS.md` checklist).
+6. **OAuth scope set: `user,task,im,disk`**, matching the shipped user, task, chat, and Drive tools. The scope string is configurable via `NUXT_BITRIX24_OAUTH_SCOPE`; tool additions must update the default and operator docs.
 
 **Out of scope (explicit):**
 
@@ -122,7 +122,7 @@ NUXT_BITRIX24_OAUTH_ENABLED=false
 NUXT_BITRIX24_OAUTH_CLIENT_ID=
 NUXT_BITRIX24_OAUTH_CLIENT_SECRET=
 NUXT_BITRIX24_OAUTH_REDIRECT_URL=https://prod.example.com/api/oauth/callback
-NUXT_BITRIX24_OAUTH_SCOPE=user,task                  # see §2.6 — update when tools grow
+NUXT_BITRIX24_OAUTH_SCOPE=user,task,im,disk           # update when tools grow
 NUXT_BITRIX24_OAUTH_DB_DIR=/data                      # mounted volume; see §10 + docker-compose. Filename `oauth.sqlite` is fixed in code (decided 2026-06-04 — operator picks the dir, not the file name; the dir conventionally holds future OAuth artefacts too)
 ```
 
@@ -518,7 +518,7 @@ All PR-2-blocking questions are resolved (moved to the list below). Remaining it
 **Resolved (moved from open questions):**
 
 - ~~App type — local vs marketplace.~~ Marketplace (§2.5). Local-app supported for dev/test.
-- ~~Scope set.~~ `user,task` to start (§2.6, §4). Updated when tools grow.
+- Scope set: `user,task,im,disk` (§2.6, §4); update when tools grow.
 - ~~DXT/OOB tenant-binding shape.~~ **Decision (2026-06-04): option (b) — a parallel `useBitrix24OAuthDxt()` dispatcher in `mcp-stdio/`, aliased in the stdio shim so tool handlers stay identical between HTTP and DXT.** Rejected (a) `useBitrix24Tenant(ctx?: TenantContext)` because a sync caller that forgets to pass `ctx` on the DXT path falls through to ALS, reads `undefined`, and crashes far from the cause — a silent-error-class no static analysis catches. The HTTP dispatcher `useBitrix24Tenant()` (in `server/utils/bitrix24-tenant.ts`) keeps its current ALS-only contract; the DXT-OAuth PR (after issue #207 ships) adds its own dispatcher that reads tenant from `user_config`. **Does not gate PR-2b/2c/2d** (all HTTP).
 - ~~OAuth-database env-var shape — `_PATH` (file) vs `_DIR` (folder).~~ **Decision (2026-06-04): `NUXT_BITRIX24_OAUTH_DB_DIR` — operator picks the directory, the filename `oauth.sqlite` is fixed in code.** Cleaner when future OAuth artefacts (key files, encrypted exports, migration backups) land in the same directory; also matches how `NUXT_AUDIT_DIR` already works.
 - ~~SDK typing — `B24Hook | B24OAuth` structural fit for `callV3` / `callV2` / `batchV3`.~~ Both classes extend `AbstractB24` and implement the SDK-exported `TypeB24` interface (`@bitrix24/b24jssdk@1.1.2`, `dist/esm/index.d.ts` L2267-2361, L4533, L5314). The full surface tool handlers touch — `auth`, `actions.v3.*`, `actions.v2.*`, `tools` — is on `TypeB24`. Migration is `s/B24Hook/TypeB24/` in `server/utils/sdk-helpers.ts` (4 signatures); no local alias, no upstream PR. See §7 "Typing — resolved by upstream `TypeB24`". Issue #59 closed as resolved.

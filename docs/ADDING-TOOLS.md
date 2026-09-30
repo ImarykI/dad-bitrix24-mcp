@@ -36,15 +36,16 @@ MCP client ── /mcp ──▶ defineMcpTool handler
 ```
 server/mcp/tools/
 ├── tasks/   – the tasks module (tasks.task.*, task.*)
-├── users/   – user lookup / identity (user.current, user.search)
+├── users/   – user lookup / identity (user.current, user.get)
+├── chats/   – chat history, search, messages, and file sending (im.*)
+├── disk/    – Drive storage, files, folders, and uploads (disk.*)
 └── meta/    – MCP meta-tools that don't call Bitrix24 (e.g. bx24mcp_submit_feedback)
 ```
 
 One tool per file, named `kebab-case.ts`. Adding a tool for a domain that doesn't
-have a folder yet (CRM is the demand-driven post-release expansion zone: deals / contacts /
-leads; calendars, disk, im, … are also fair game)? Create the directory under
-`server/mcp/tools/` — extending into new Bitrix24 modules is exactly what this
-template is built for.
+have a folder yet (for example CRM deals, contacts, and leads, or calendars)?
+Create the directory under `server/mcp/tools/` — extending into new Bitrix24
+modules is exactly what this template is built for.
 
 ## The two registrations (don't skip the second one)
 
@@ -125,7 +126,8 @@ Four things the example bakes in, and why they matter for a human writing the ne
 
 Bitrix24 has two REST surfaces and they are **not** interchangeable. The classic
 API (UPPERCASE fields) goes through `callV2`/`batchV2`; rest-v3 (camelCase DTOs)
-through `callV3`/`batchV3`. Calling a classic method on v3 fails with
+through `callV3`/`batchV3`. User, task, chat, and Drive methods such as `user.*`,
+`task.*`, `im.*`, and `disk.*` use the classic v2 surface. Calling a classic method on v3 fails with
 `UNKNOWNDTOPROPERTYEXCEPTION`.
 
 **Default to v2.** Bitrix24's v3 migration is slow, so most methods (`tasks.task.{add,list,update,…}`,

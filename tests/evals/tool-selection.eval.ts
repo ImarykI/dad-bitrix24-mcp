@@ -76,6 +76,40 @@ import currentUser from '~/server/mcp/tools/users/current-user'
 // eslint-disable-next-line import/first
 import findUser from '~/server/mcp/tools/users/find-user'
 // eslint-disable-next-line import/first
+import getUser from '~/server/mcp/tools/users/get-user'
+// eslint-disable-next-line import/first
+import recentChat from '~/server/mcp/tools/chats/recent-chat'
+// eslint-disable-next-line import/first
+import findChat from '~/server/mcp/tools/chats/find-chat'
+// eslint-disable-next-line import/first
+import getChat from '~/server/mcp/tools/chats/get-chat'
+// eslint-disable-next-line import/first
+import listChatMessages from '~/server/mcp/tools/chats/list-chat-messages'
+// eslint-disable-next-line import/first
+import searchChatMessages from '~/server/mcp/tools/chats/search-chat-messages'
+// eslint-disable-next-line import/first
+import searchRecentChatMessages from '~/server/mcp/tools/chats/search-recent-chat-messages'
+// eslint-disable-next-line import/first
+import sendChatMessage from '~/server/mcp/tools/chats/send-chat-message'
+// eslint-disable-next-line import/first
+import sendChatFile from '~/server/mcp/tools/chats/send-chat-file'
+// eslint-disable-next-line import/first
+import listDiskStorage from '~/server/mcp/tools/disk/list-storage'
+// eslint-disable-next-line import/first
+import listDiskFolder from '~/server/mcp/tools/disk/list-folder'
+// eslint-disable-next-line import/first
+import searchDrive from '~/server/mcp/tools/disk/search-drive'
+// eslint-disable-next-line import/first
+import getDiskFile from '~/server/mcp/tools/disk/get-file'
+// eslint-disable-next-line import/first
+import getDiskFileLink from '~/server/mcp/tools/disk/get-file-link'
+// eslint-disable-next-line import/first
+import readDiskFileText from '~/server/mcp/tools/disk/read-file-text'
+// eslint-disable-next-line import/first
+import createDiskFolder from '~/server/mcp/tools/disk/create-folder'
+// eslint-disable-next-line import/first
+import uploadDiskFile from '~/server/mcp/tools/disk/upload-file'
+// eslint-disable-next-line import/first
 import createTask from '~/server/mcp/tools/tasks/create-task'
 // eslint-disable-next-line import/first
 import listTasks from '~/server/mcp/tools/tasks/list-tasks'
@@ -141,6 +175,23 @@ interface McpToolDef {
 const ALL_TOOLS: McpToolDef[] = [
   currentUser as unknown as McpToolDef,
   findUser as unknown as McpToolDef,
+  getUser as unknown as McpToolDef,
+  recentChat as unknown as McpToolDef,
+  findChat as unknown as McpToolDef,
+  getChat as unknown as McpToolDef,
+  listChatMessages as unknown as McpToolDef,
+  searchChatMessages as unknown as McpToolDef,
+  searchRecentChatMessages as unknown as McpToolDef,
+  sendChatMessage as unknown as McpToolDef,
+  sendChatFile as unknown as McpToolDef,
+  listDiskStorage as unknown as McpToolDef,
+  listDiskFolder as unknown as McpToolDef,
+  searchDrive as unknown as McpToolDef,
+  getDiskFile as unknown as McpToolDef,
+  getDiskFileLink as unknown as McpToolDef,
+  readDiskFileText as unknown as McpToolDef,
+  createDiskFolder as unknown as McpToolDef,
+  uploadDiskFile as unknown as McpToolDef,
   createTask as unknown as McpToolDef,
   listTasks as unknown as McpToolDef,
   updateTask as unknown as McpToolDef,
@@ -234,6 +285,97 @@ const CASES: Case[] = [
     input: 'What is my Bitrix24 user id?',
     expected: 'b24_user_me',
     notes: 'Self-id English variant.',
+  },
+
+  // ── User profile by id ─────────────────────────────────────────────────
+  {
+    input: 'Get the Bitrix24 profile for user 42.',
+    expected: 'b24_user_get',
+    notes: 'Explicit ID lookup, distinct from name-based user_find.',
+  },
+
+  // ── Chat and messenger (im scope) ──────────────────────────────────────
+  {
+    input: 'Show my recent Bitrix24 chats.',
+    expected: 'b24_chat_recent',
+    notes: 'Recent dialogs, not message-history search.',
+  },
+  {
+    input: 'Find the project chat called Launch planning.',
+    expected: 'b24_chat_find',
+    notes: 'Find an accessible chat by title/participant.',
+  },
+  {
+    input: 'Get details for dialog chat123.',
+    expected: 'b24_chat_get',
+    notes: 'Chat metadata lookup.',
+  },
+  {
+    input: 'Read the latest messages in chat123.',
+    expected: 'b24_chat_message_list',
+    notes: 'History for one dialog.',
+  },
+  {
+    input: 'Search chat123 for messages about the deployment date.',
+    expected: 'b24_chat_message_search',
+    notes: 'Message-content search inside one dialog.',
+  },
+  {
+    input: 'Search my ten most recent chats for the word deployment.',
+    expected: 'b24_chat_recent_search',
+    notes: 'Cross-dialog search bounded to recent chats.',
+  },
+  {
+    input: 'After confirming with me, send "The release is ready" to chat123.',
+    expected: 'b24_chat_message_send',
+    notes: 'Confirmed write to the named dialog.',
+  },
+  {
+    input: 'After I confirm the destination, send the selected file to chat123.',
+    expected: 'b24_chat_file_send',
+    notes: 'File upload to a chat, not a Drive upload.',
+  },
+
+  // ── Drive (disk scope) ──────────────────────────────────────────────────
+  {
+    input: 'List the Drive storages I can access.',
+    expected: 'b24_disk_storage_list',
+    notes: 'Storage roots available to the authenticated user.',
+  },
+  {
+    input: 'List the files and folders directly inside Drive folder 42.',
+    expected: 'b24_disk_folder_list',
+    notes: 'Direct children of a specified folder.',
+  },
+  {
+    input: 'Search Drive for quarterly budget reports.',
+    expected: 'b24_disk_search',
+    notes: 'Search file/folder names and indexed document text.',
+  },
+  {
+    input: 'Get metadata for Drive file 42.',
+    expected: 'b24_disk_file_get',
+    notes: 'Private metadata lookup, no link creation.',
+  },
+  {
+    input: 'Read the text in Drive file 42.',
+    expected: 'b24_disk_file_text_read',
+    notes: 'Capped extraction for a supported text file.',
+  },
+  {
+    input: 'After I confirm public sharing, get a public link for Drive file 42.',
+    expected: 'b24_disk_file_link_get',
+    notes: 'Public link requires a confirmation gate.',
+  },
+  {
+    input: 'After I confirm, create a folder named Reports under Drive folder 12.',
+    expected: 'b24_disk_folder_create',
+    notes: 'Confirmed Drive folder creation.',
+  },
+  {
+    input: 'After I confirm the target and contents, upload the selected report to Drive folder 12.',
+    expected: 'b24_disk_file_upload',
+    notes: 'Confirmed Drive upload, not chat-file send.',
   },
 
   // ── list_tasks (filtering without name resolution) ─────────────────────

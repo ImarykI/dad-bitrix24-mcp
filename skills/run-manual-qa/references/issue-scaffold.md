@@ -55,7 +55,7 @@ The checklist item becomes a clickable link to that issue. Closing the issue aut
 | Bitrix24 test portal | Portal admin | any block touching the portal |
 | Incoming webhook on the portal | Bitrix24 → Applications → Webhooks → Inbound | `.env` value |
 
-**Webhook scopes (minimum):** `tasks` rw, `task_comments` rw, `user` read. The task sub-entities (checklist / result / elapsed / dependency) ride on the `tasks` scope — confirm against the portal's scope list if a check 403s. Create it under a **dedicated, non-admin service user**: the access-control check (A6 `ACCESSDENIED`) deliberately needs a non-admin so it can be denied. Grant admin only if a specific check requires cross-user visibility, and revoke it after.
+**Webhook scopes (minimum for the full tool set):** `tasks` rw, `task_comments` rw, `user` read, `im`, and `disk`. The task sub-entities (checklist / result / elapsed / dependency) ride on the `tasks` scope — confirm against the portal's scope list if a check 403s. Create it under a **dedicated, non-admin service user**: the access-control check (A6 `ACCESSDENIED`) deliberately needs a non-admin so it can be denied. Grant admin only if a specific check requires cross-user visibility, and revoke it after.
 **PAT settings:** repo access = test repo only; permission = `Issues: Read and write`. Copy the token once.
 
 ### 2. Local environment
@@ -94,7 +94,7 @@ OAuth multi-tenant (opt-in, landed and off by default — webhook-only manual QA
 `NUXT_BITRIX24_OAUTH_ENABLED` (default `false`; with `=true`, Claude Connectors discover the authorization server, register with DCR, and use S256 PKCE; `/mcp` validates audience-bound, expiring OAuth access tokens, and the shared `NUXT_MCP_AUTH_TOKEN` is bypassed. The manual `/api/oauth/install` Bearer flow remains supported for non-OAuth clients. OAuth 401s advertise the protected-resource metadata URL. Rate limits per IP per 60 seconds: 10 install, 30 callback, and 20 each for `/api/oauth/register` and `/api/oauth/authorize`; each returns 429 + `Retry-After` + `RATE-LIMITED`),
 `NUXT_BITRIX24_OAUTH_CLIENT_ID` / `NUXT_BITRIX24_OAUTH_CLIENT_SECRET` (from a registered Bitrix24 Marketplace application, needed only when ENABLED=true),
 `NUXT_BITRIX24_OAUTH_REDIRECT_URL` (no default — must be set to the exact URL registered on the Bitrix24 side when `ENABLED=true`; `.env.example` shows `https://prod.example.com/api/oauth/callback` as a placeholder shape, not a value to copy verbatim),
-`NUXT_BITRIX24_OAUTH_SCOPE` (default `user,task`),
+`NUXT_BITRIX24_OAUTH_SCOPE` (default `user,task,im,disk`),
 `NUXT_BITRIX24_OAUTH_DB_DIR` (directory that holds the SQLite token store; default `/data`, filename `oauth.sqlite` is fixed in code),
 `NUXT_BITRIX24_OAUTH_ADMIN_TOKEN` (operator-only token gating `GET /api/oauth/_health`; deliberately separate from `NUXT_MCP_AUTH_TOKEN`. Leave empty for localhost-only access via nginx allow/deny; the route fails closed (`503 NOT-CONFIGURED`) for a non-localhost request when unset. Once set, the Bearer is required uniformly — even a localhost request needs it).
 

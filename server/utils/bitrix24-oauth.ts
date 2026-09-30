@@ -1,7 +1,7 @@
 import { B24OAuth, type B24OAuthParams, type B24OAuthSecret, type HandlerRefreshAuth } from '@bitrix24/b24jssdk'
 import { useLogger } from '~/server/utils/logger'
 import { makeRedactingLogger } from '~/server/utils/logger-redactor'
-import { isAllowedPortalDomain, validateClientEndpoint, validateServerEndpoint } from '~/server/utils/portal-validation'
+import { isAllowedCentralOauthHost, isAllowedPortalDomain, validateClientEndpoint, validateServerEndpoint } from '~/server/utils/portal-validation'
 import { useTokenStore } from '~/server/utils/token-store'
 
 /**
@@ -292,13 +292,15 @@ export function useBitrix24OAuth(memberId: string, userId: number): B24OAuth {
     // We never let an upstream-supplied value silently mutate the
     // stored portal or the SDK's HTTP target.
     //
-    // - `data.domain`: must pass the allow-list AND equal the stored
-    //   portal — a refresh is bound to a specific tenant, swapping
-    //   portals mid-flow is a bug or an attack. Refuse without writing.
+    // - `data.domain`: must be the stored portal or a known central OAuth
+    //   host. Refresh is still bound to the stored tenant; central hosts
+    //   must never replace its portal domain.
     // - `data.client_endpoint` / `data.server_endpoint`: validated by the
     //   shared helpers below, which substitute the safe canonical URL
     //   and log `oauth.endpoint.reject` on mismatch (no throw).
-    if (data.domain != null && (!isAllowedPortalDomain(data.domain) || data.domain !== current.portalDomain)) {
+    const responseDomain = typeof data.domain === 'string' ? data.domain.toLowerCase() : data.domain
+    const isCentralOauthDomain = isAllowedCentralOauthHost(responseDomain)
+    if (data.domain != null && !isCentralOauthDomain && (!isAllowedPortalDomain(responseDomain) || responseDomain !== current.portalDomain)) {
       refreshStatus.lastRefreshFail = Math.floor(Date.now() / 1000)
       void log.error('oauth.refresh.fail.transient', {
         memberId,
@@ -324,7 +326,7 @@ export function useBitrix24OAuth(memberId: string, userId: number): B24OAuth {
     await store.upsertTokens({
       memberId,
       userId,
-      portalDomain: data.domain ?? current.portalDomain,
+      portalDomain: current.portalDomain,
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
       accessExpiresAt,
@@ -347,7 +349,7 @@ export function useBitrix24OAuth(memberId: string, userId: number): B24OAuth {
       member_id: data.member_id ?? memberId,
       scope: data.scope ?? current.scope,
       status: data.status ?? 'L',
-      domain: data.domain ?? current.portalDomain,
+      domain: current.portalDomain,
     }
   })
 

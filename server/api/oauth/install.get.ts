@@ -256,7 +256,7 @@ export default defineEventHandler(async (event) => {
   // authorize URL. Operator-fixable, not user-fixable.
   const clientId = String(bitrix24OauthClientId ?? '').trim()
   const redirectUrl = String(bitrix24OauthRedirectUrl ?? '').trim()
-  const scope = String(bitrix24OauthScope ?? '').trim() || 'user,task'
+  const scope = String(bitrix24OauthScope ?? '').trim() || 'user,task,im,disk'
   if (!clientId || !redirectUrl) {
     void logger.error('oauth.install.deny.not-configured', {
       hasClientId: !!clientId,
